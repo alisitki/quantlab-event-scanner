@@ -35,6 +35,19 @@ resources:
               - --sample-size
               - "20"
 
+    phase1_btc_trade_profile:
+      name: phase1_btc_trade_profile
+      tasks:
+        - task_key: profile_btc_trade_data
+          existing_cluster_id: ${var.cluster_id}
+          spark_python_task:
+            python_file: jobs/02_profile_trade_data.py
+            parameters:
+              - --config
+              - configs/dev.yaml
+              - --sample-size
+              - "20"
+
 variables:
   cluster_id:
     description: Existing classic Databricks cluster ID for probe runs.

@@ -2,10 +2,10 @@
 
 Phase 0 repository bootstrap for the QuantLab event scanner.
 
-This repository currently contains only the project skeleton: package code,
-configuration, tests, a Databricks Asset Bundle placeholder, and packaging files.
-It does not scan S3, execute Databricks jobs, run Spark event detection, train ML
-models, perform trading or execution, create notebooks, or store data locally.
+This repository contains the project skeleton, configuration, tests, Databricks
+Asset Bundle jobs, and early Spark profiling/probe code. It does not run Spark
+event detection, train ML models, perform trading or execution, create
+notebooks, or store data locally.
 
 Input data is expected to live on S3 in future phases. Compacted metadata will be
 read from `s3://quantlab-compact-stk-euc1/compacted/_manifest.json` in future
@@ -108,6 +108,44 @@ databricks clusters delete 0426-145152-cv6y6ado --profile quantlab-classic
 The classic cluster ID is a development default, not a secret, and can be
 overridden with `--var cluster_id=...`. Classic clusters should normally be
 terminated after runs to avoid idle cost.
+
+## Phase 1B - BTC trade data profiling
+
+Phase 1B profiles BTC trade data quality and time behavior before event
+detection. It reads the manifest through Spark, selects BTC `trade` partitions
+with coverage-aware date selection, reads parquet files, logs profiling
+summaries, and writes no S3 output.
+
+The date selection rule is:
+
+- Prefer the latest date with full `3/3` coverage across configured exchanges.
+- If no full-coverage date exists, use the latest date with at least `2/3`
+  coverage.
+- If no date has at least `2/3` coverage, log a controlled warning and exit
+  without reading parquet files.
+
+Validate/deploy/run on the classic workspace:
+
+```bash
+databricks clusters start 0426-145152-cv6y6ado --profile quantlab-classic
+databricks bundle validate -t dev_classic --profile quantlab-classic
+databricks bundle deploy -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+databricks bundle run phase1_btc_trade_profile -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+databricks clusters delete 0426-145152-cv6y6ado --profile quantlab-classic
+```
+
+Verified on 2026-04-26 against `dev_classic`:
+
+- Run result: `TERMINATED SUCCESS`.
+- Selected coverage-aware date: `20260423`.
+- Selected coverage: `binance`, `bybit`, `okx` (`3/3`).
+- Latest manifest dates `20260425` and `20260424` had only `2/3` coverage
+  because Binance BTC trade data was missing.
+- Total selected row count: `5,578,439`.
+- Known trade columns had zero nulls.
+- `trade_id` duplicate groups: `0`.
+- Sequence/time ordering out-of-order counts: `0` for all selected exchanges.
+- No S3 output was written.
 
 ## Local Development
 
