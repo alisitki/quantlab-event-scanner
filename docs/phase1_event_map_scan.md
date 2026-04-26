@@ -98,3 +98,20 @@ Phase 1 should not:
 - Place orders or include trading/execution logic.
 - Store S3 data locally.
 - Create notebooks.
+
+## Phase 1A Probe
+
+The first implementation step is deliberately narrower than event detection:
+
+- Read `compacted/_manifest.json` from S3 inside Databricks.
+- Find the latest manifest date.
+- Select only `stream=trade` partitions whose symbol contains `btc`.
+- Fetch only manifest entries with `available=true`.
+- Use `artifacts.data_key` from the manifest; do not synthesize partition paths.
+- Log the selected parquet paths.
+- Read those parquet files with Spark.
+- Log schema, row count, and a small sample.
+- Stop without writing output.
+
+Phase 1A explicitly does not run z-score, rolling-window, aggregation, event
+detection, or feature-engineering logic.

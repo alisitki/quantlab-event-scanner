@@ -66,6 +66,34 @@ Future phases:
 Phase 1 design notes are tracked in
 [`docs/phase1_event_map_scan.md`](docs/phase1_event_map_scan.md).
 
+## Phase 1A - Manifest latest BTC trade probe
+
+The first Databricks job is a controlled probe only. It reads the compacted
+manifest, finds the latest date, selects `stream=trade` partitions whose symbol
+contains `btc`, reads those parquet paths with Spark, logs schema, row count,
+and a small sample, then stops.
+
+Manifest v2 consumer semantics are documented in
+[`STATE_V2_CONSUMER.md`](STATE_V2_CONSUMER.md): only entries with
+`available=true` are read, and parquet read paths come from
+`artifacts.data_key`.
+
+It does not calculate z-scores, rolling windows, aggregations, events, features,
+or write any S3 output.
+
+Validate the bundle:
+
+```bash
+databricks bundle validate -t dev --profile quantlab-dev
+```
+
+Deploy/run only after providing an existing cluster ID:
+
+```bash
+databricks bundle deploy -t dev --profile quantlab-dev --var cluster_id=<CLUSTER_ID>
+databricks bundle run phase1_manifest_trade_btc_probe -t dev --profile quantlab-dev --var cluster_id=<CLUSTER_ID>
+```
+
 ## Local Development
 
 Install the package with development dependencies:

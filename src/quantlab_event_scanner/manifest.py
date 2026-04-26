@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -22,6 +23,8 @@ class ManifestPartition:
     symbol: str | None = None
     date: str | None = None
     path: str | None = None
+    available: bool | None = None
+    artifacts: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,10 @@ def parse_manifest_json(obj: Mapping[str, Any]) -> ManifestMetadata:
     if not isinstance(obj, Mapping):
         raise TypeError("Manifest must be a mapping.")
 
+    v2_partitions = _partitions_from_manifest_v2(obj)
+    if v2_partitions is not None:
+        return ManifestMetadata(raw=obj, partitions=v2_partitions)
+
     partitions: list[ManifestPartition] = []
     seen: set[tuple[str | None, str | None, str | None, str | None, str | None]] = set()
 
@@ -48,6 +55,7 @@ def parse_manifest_json(obj: Mapping[str, Any]) -> ManifestMetadata:
             partition.symbol,
             partition.date,
             partition.path,
+            partition.available,
         )
         if key not in seen:
             seen.add(key)
@@ -78,11 +86,16 @@ def parse_manifest_json(obj: Mapping[str, Any]) -> ManifestMetadata:
 
 
 def load_manifest_from_s3_with_spark(spark: Any, manifest_path: str) -> ManifestMetadata:
-    """Future Databricks/Spark manifest loader placeholder."""
+    """Load a JSON manifest through Spark and parse it.
 
-    raise NotImplementedError(
-        "Manifest loading from S3 with Spark is reserved for a future Databricks phase."
-    )
+    This function is intended for Databricks execution. Local tests should pass a
+    fake Spark object and must not read real S3.
+    """
+
+    rows = spark.read.text(manifest_path).collect()
+    payload = "\n".join(_row_value(row) for row in rows)
+    loaded = json.loads(payload)
+    return parse_manifest_json(loaded)
 
 
 def _partition_from_mapping(value: Mapping[str, Any]) -> ManifestPartition | None:
@@ -102,6 +115,60 @@ def _partition_from_mapping(value: Mapping[str, Any]) -> ManifestPartition | Non
         date=date,
         path=path,
     )
+
+
+def _partitions_from_manifest_v2(obj: Mapping[str, Any]) -> tuple[ManifestPartition, ...] | None:
+    dates = obj.get("dates")
+    if not isinstance(dates, Mapping):
+        return None
+
+    partitions: list[ManifestPartition] = []
+    for date, date_entry in dates.items():
+        if not isinstance(date, str) or not isinstance(date_entry, Mapping):
+            continue
+        exchanges = date_entry.get("exchanges")
+        if not isinstance(exchanges, Mapping):
+            continue
+
+        for exchange, exchange_entry in exchanges.items():
+            if not isinstance(exchange, str) or not isinstance(exchange_entry, Mapping):
+                continue
+            streams = exchange_entry.get("streams")
+            if not isinstance(streams, Mapping):
+                continue
+
+            for stream, stream_entry in streams.items():
+                if not isinstance(stream, str) or not isinstance(stream_entry, Mapping):
+                    continue
+                symbols = stream_entry.get("symbols")
+                if not isinstance(symbols, Mapping):
+                    continue
+
+                for symbol, symbol_entry in symbols.items():
+                    if not isinstance(symbol, str) or not isinstance(symbol_entry, Mapping):
+                        continue
+                    artifacts = _string_artifacts(symbol_entry.get("artifacts"))
+                    data_key = artifacts.get("data_key")
+                    available = symbol_entry.get("available")
+                    partitions.append(
+                        ManifestPartition(
+                            exchange=exchange,
+                            stream=stream,
+                            symbol=symbol,
+                            date=date,
+                            path=data_key,
+                            available=available if isinstance(available, bool) else None,
+                            artifacts=artifacts,
+                        )
+                    )
+
+    return tuple(partitions)
+
+
+def _string_artifacts(value: Any) -> Mapping[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, str)}
 
 
 def _partition_from_path(value: str) -> ManifestPartition | None:
@@ -130,3 +197,14 @@ def _optional_string(value: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _row_value(row: Any) -> str:
+    if isinstance(row, Mapping):
+        value = row["value"]
+    else:
+        value = row.value
+
+    if not isinstance(value, str):
+        raise TypeError("Spark text row value must be a string.")
+    return value

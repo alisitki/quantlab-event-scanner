@@ -1,6 +1,26 @@
 bundle:
   name: quantlab-event-scanner
 
+variables:
+  cluster_id:
+    description: Existing Databricks cluster ID for controlled probe runs.
+    default: CLUSTER_ID_REQUIRED_FOR_RUN
+
+resources:
+  jobs:
+    phase1_manifest_trade_btc_probe:
+      name: phase1_manifest_trade_btc_probe
+      tasks:
+        - task_key: probe_latest_btc_trade
+          existing_cluster_id: ${var.cluster_id}
+          spark_python_task:
+            python_file: jobs/01_detect_events.py
+            parameters:
+              - --config
+              - configs/dev.yaml
+              - --sample-size
+              - "20"
+
 targets:
   dev:
     mode: development
