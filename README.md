@@ -63,6 +63,9 @@ Future phases:
 2. Phase 2: pre-event window extraction
 3. Phase 3: normal-time comparison
 
+Phase 1 design notes are tracked in
+[`docs/phase1_event_map_scan.md`](docs/phase1_event_map_scan.md).
+
 ## Local Development
 
 Install the package with development dependencies:
