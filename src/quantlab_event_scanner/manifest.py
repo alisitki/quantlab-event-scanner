@@ -93,10 +93,9 @@ def load_manifest_from_s3_with_spark(spark: Any, manifest_path: str) -> Manifest
     fake Spark object and must not read real S3.
     """
 
-    rows = spark.read.text(manifest_path).collect()
-    payload = "\n".join(_row_value(row) for row in rows)
+    payload = _read_text_file_with_spark(spark, manifest_path)
     if not payload.strip():
-        raise ValueError(f"Manifest at {manifest_path} is empty or returned no text rows.")
+        raise ValueError(f"Manifest at {manifest_path} is empty.")
 
     try:
         loaded = json.loads(payload)
@@ -104,7 +103,7 @@ def load_manifest_from_s3_with_spark(spark: Any, manifest_path: str) -> Manifest
         preview = payload[:500].replace("\n", "\\n")
         raise ValueError(
             f"Manifest at {manifest_path} is not valid JSON. "
-            f"rows={len(rows)}, chars={len(payload)}, preview={preview!r}"
+            f"chars={len(payload)}, preview={preview!r}"
         ) from exc
     return parse_manifest_json(loaded)
 
@@ -208,6 +207,33 @@ def _optional_string(value: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _read_text_file_with_spark(spark: Any, path: str) -> str:
+    if hasattr(spark, "_jvm") and hasattr(spark, "_jsc"):
+        return _read_text_file_with_hadoop(spark, path)
+
+    rows = spark.read.text(path).collect()
+    return "\n".join(_row_value(row) for row in rows)
+
+
+def _read_text_file_with_hadoop(spark: Any, path: str) -> str:
+    jvm = spark._jvm
+    hadoop_conf = spark._jsc.hadoopConfiguration()
+    hadoop_path = jvm.org.apache.hadoop.fs.Path(path)
+    filesystem = hadoop_path.getFileSystem(hadoop_conf)
+    stream = filesystem.open(hadoop_path)
+
+    try:
+        scanner = jvm.java.util.Scanner(stream, "UTF-8").useDelimiter("\\A")
+        try:
+            if scanner.hasNext():
+                return scanner.next()
+            return ""
+        finally:
+            scanner.close()
+    finally:
+        stream.close()
 
 
 def _row_value(row: Any) -> str:

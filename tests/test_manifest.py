@@ -146,7 +146,7 @@ def test_load_manifest_from_s3_with_spark_fails_clearly_on_empty_manifest() -> N
     try:
         load_manifest_from_s3_with_spark(spark, "s3://bucket/_manifest.json")
     except ValueError as exc:
-        assert "empty or returned no text rows" in str(exc)
+        assert "is empty" in str(exc)
     else:
         raise AssertionError("Expected empty manifest to fail.")
 
