@@ -140,6 +140,17 @@ def test_load_manifest_from_s3_with_spark_uses_fake_spark_text_reader() -> None:
     assert spark.read.path == "s3://bucket/_manifest.json"
 
 
+def test_load_manifest_from_s3_with_spark_fails_clearly_on_empty_manifest() -> None:
+    spark = _FakeSpark([])
+
+    try:
+        load_manifest_from_s3_with_spark(spark, "s3://bucket/_manifest.json")
+    except ValueError as exc:
+        assert "empty or returned no text rows" in str(exc)
+    else:
+        raise AssertionError("Expected empty manifest to fail.")
+
+
 class _FakeSpark:
     def __init__(self, lines: list[str]) -> None:
         self.read = _FakeReader(lines)

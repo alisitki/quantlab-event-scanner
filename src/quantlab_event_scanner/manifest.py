@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from json import JSONDecodeError
 from typing import Any, Mapping
 
 
@@ -94,7 +95,17 @@ def load_manifest_from_s3_with_spark(spark: Any, manifest_path: str) -> Manifest
 
     rows = spark.read.text(manifest_path).collect()
     payload = "\n".join(_row_value(row) for row in rows)
-    loaded = json.loads(payload)
+    if not payload.strip():
+        raise ValueError(f"Manifest at {manifest_path} is empty or returned no text rows.")
+
+    try:
+        loaded = json.loads(payload)
+    except JSONDecodeError as exc:
+        preview = payload[:500].replace("\n", "\\n")
+        raise ValueError(
+            f"Manifest at {manifest_path} is not valid JSON. "
+            f"rows={len(rows)}, chars={len(payload)}, preview={preview!r}"
+        ) from exc
     return parse_manifest_json(loaded)
 
 

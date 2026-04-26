@@ -53,6 +53,8 @@ def main() -> None:
 
     config_path = _resolve_path(args.config)
     config = load_config(config_path)
+    LOGGER.info("Using config: %s", config_path)
+    LOGGER.info("Manifest path: %s", config.manifest_path)
 
     spark = _get_spark_session()
     manifest = load_manifest_from_s3_with_spark(spark, config.manifest_path)
