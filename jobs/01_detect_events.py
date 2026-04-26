@@ -15,11 +15,10 @@ from pathlib import Path
 
 
 def _bootstrap_src_path() -> None:
-    job_file = Path(__file__).resolve()
-    candidates = [
-        job_file.parents[1] / "src",
-        Path.cwd() / "src",
-    ]
+    job_file = _script_path()
+    candidates = [Path.cwd() / "src"]
+    if job_file is not None:
+        candidates.insert(0, job_file.parents[1] / "src")
 
     for candidate in candidates:
         if candidate.exists():
@@ -86,13 +85,24 @@ def _resolve_path(path: str) -> Path:
     if candidate.exists():
         return candidate
 
-    job_file = Path(__file__).resolve()
-    for base in (job_file.parents[1], Path.cwd()):
+    bases = [Path.cwd()]
+    job_file = _script_path()
+    if job_file is not None:
+        bases.insert(0, job_file.parents[1])
+
+    for base in bases:
         resolved = base / path
         if resolved.exists():
             return resolved
 
     raise FileNotFoundError(f"Config file not found: {path}")
+
+
+def _script_path() -> Path | None:
+    script_name = globals().get("__file__") or globals().get("filename")
+    if not isinstance(script_name, str):
+        return None
+    return Path(script_name).resolve()
 
 
 def _get_spark_session():
