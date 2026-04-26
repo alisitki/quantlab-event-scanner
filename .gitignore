@@ -3,9 +3,13 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.databricks/
+.databrickscfg
 *.parquet
 *.csv
 *.jsonl
+*.token
+*.secret
 data/
 outputs/
 tmp/

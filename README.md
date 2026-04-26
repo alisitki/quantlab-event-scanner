@@ -21,6 +21,42 @@ databricks bundle deploy
 databricks bundle run
 ```
 
+## Phase 0.5 - Databricks CLI authentication
+
+The repository code can exist locally without Databricks CLI authentication.
+Databricks CLI authentication is required before running bundle validation,
+deployment, or jobs from this machine. Authentication must be performed manually
+by the user. Do not commit credentials, tokens, workspace credentials, or
+`.databrickscfg`; do not store tokens in this repository.
+
+Install the Databricks CLI on macOS:
+
+```bash
+brew tap databricks/tap
+brew install databricks
+databricks -v
+```
+
+Authenticate with the development workspace:
+
+```bash
+databricks auth login --host <DATABRICKS_WORKSPACE_URL> --profile quantlab-dev
+databricks auth profiles
+databricks current-user me --profile quantlab-dev
+```
+
+Replace `<DATABRICKS_WORKSPACE_URL>` with the real workspace URL. The preferred
+local profile name is `quantlab-dev`. A production profile can be added later as
+`quantlab-prod`.
+
+Validate the bundle after authentication:
+
+```bash
+databricks bundle validate -t dev --profile quantlab-dev
+```
+
+Bundle deploy and run commands are not part of Phase 0.5.
+
 Future phases:
 
 1. Phase 1: event map scan

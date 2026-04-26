@@ -18,6 +18,7 @@ REQUIRED_FIELDS = (
     "exchanges",
     "streams",
     "binance_open_interest_supported",
+    "stream_semantics",
     "outputs",
 )
 
@@ -41,6 +42,7 @@ class ScannerConfig:
     exchanges: tuple[str, ...]
     streams: tuple[str, ...]
     binance_open_interest_supported: bool
+    stream_semantics: Mapping[str, Mapping[str, str]]
     outputs: Mapping[str, str]
     raw: Mapping[str, Any] = field(repr=False)
 
@@ -87,6 +89,7 @@ def validate_config(config: Mapping[str, Any]) -> ScannerConfig:
         binance_open_interest_supported=_required_bool(
             config, "binance_open_interest_supported"
         ),
+        stream_semantics=_required_stream_semantics(config, "stream_semantics"),
         outputs={name: _required_output_path(outputs, name) for name in REQUIRED_OUTPUTS},
         raw=dict(config),
     )
@@ -129,3 +132,34 @@ def _required_bool(config: Mapping[str, Any], field_name: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"Config field '{field_name}' must be a boolean.")
     return value
+
+
+def _required_stream_semantics(
+    config: Mapping[str, Any],
+    field_name: str,
+) -> Mapping[str, Mapping[str, str]]:
+    value = config[field_name]
+    if not isinstance(value, Mapping):
+        raise TypeError(f"Config field '{field_name}' must be a mapping.")
+
+    normalized: dict[str, dict[str, str]] = {}
+    for exchange, streams in value.items():
+        if not isinstance(exchange, str) or not exchange:
+            raise TypeError(f"Config field '{field_name}' must use non-empty string keys.")
+        if not isinstance(streams, Mapping):
+            raise TypeError(f"Config field '{field_name}.{exchange}' must be a mapping.")
+
+        normalized[exchange] = {}
+        for stream, semantic in streams.items():
+            if not isinstance(stream, str) or not stream:
+                raise TypeError(
+                    f"Config field '{field_name}.{exchange}' must use non-empty string keys."
+                )
+            if not isinstance(semantic, str) or not semantic:
+                raise TypeError(
+                    f"Config field '{field_name}.{exchange}.{stream}' must be a "
+                    "non-empty string."
+                )
+            normalized[exchange][stream] = semantic
+
+    return normalized

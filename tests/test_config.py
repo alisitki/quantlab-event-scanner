@@ -16,6 +16,11 @@ def _valid_config() -> dict:
         "exchanges": ["binance", "bybit", "okx"],
         "streams": ["bbo", "trade", "mark_price", "funding", "open_interest"],
         "binance_open_interest_supported": False,
+        "stream_semantics": {
+            "binance": {"trade": "agg_trade"},
+            "bybit": {"trade": "trade"},
+            "okx": {"trade": "trade"},
+        },
         "outputs": {
             "price_1s": "s3://quantlab-research/price_1s",
             "events_map": "s3://quantlab-research/events_map",
@@ -36,6 +41,7 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.exchanges == ("binance", "bybit", "okx")
     assert config.streams == ("bbo", "trade", "mark_price", "funding", "open_interest")
     assert config.binance_open_interest_supported is False
+    assert config.stream_semantics["binance"]["trade"] == "agg_trade"
 
 
 def test_validate_config_requires_manifest_path() -> None:
@@ -52,6 +58,15 @@ def test_validate_config_exposes_manifest_path() -> None:
     assert config.manifest_path.endswith("/compacted/_manifest.json")
 
 
+def test_validate_config_preserves_stream_semantics() -> None:
+    config = validate_config(_valid_config())
+
+    assert config.stream_semantics == {
+        "binance": {"trade": "agg_trade"},
+        "bybit": {"trade": "trade"},
+        "okx": {"trade": "trade"},
+    }
+
 
 def test_validate_config_requires_outputs() -> None:
     raw = _valid_config()
@@ -59,3 +74,16 @@ def test_validate_config_requires_outputs() -> None:
 
     with pytest.raises(ValueError, match="events_map"):
         validate_config(raw)
+
+
+def test_repository_configs_preserve_stream_semantics() -> None:
+    repo_root = Path(__file__).parents[1]
+
+    for config_name in ("dev.yaml", "prod.yaml"):
+        config = load_config(repo_root / "configs" / config_name)
+
+        assert config.stream_semantics == {
+            "binance": {"trade": "agg_trade"},
+            "bybit": {"trade": "trade"},
+            "okx": {"trade": "trade"},
+        }

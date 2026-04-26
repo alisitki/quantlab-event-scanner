@@ -21,6 +21,11 @@ def _config():
             "exchanges": ["binance", "bybit", "okx"],
             "streams": ["bbo", "trade", "mark_price", "funding", "open_interest"],
             "binance_open_interest_supported": False,
+            "stream_semantics": {
+                "binance": {"trade": "agg_trade"},
+                "bybit": {"trade": "trade"},
+                "okx": {"trade": "trade"},
+            },
             "outputs": {
                 "price_1s": "s3://quantlab-research/price_1s",
                 "events_map": "s3://quantlab-research/events_map",

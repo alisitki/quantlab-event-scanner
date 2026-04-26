@@ -19,6 +19,14 @@ streams:
 
 binance_open_interest_supported: false
 
+stream_semantics:
+  binance:
+    trade: agg_trade
+  bybit:
+    trade: trade
+  okx:
+    trade: trade
+
 outputs:
   price_1s: s3://quantlab-research/price_1s
   events_map: s3://quantlab-research/events_map
