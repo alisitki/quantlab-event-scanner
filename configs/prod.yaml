@@ -1,0 +1,26 @@
+input_bucket: quantlab-compact-stk-euc1
+input_root: s3://quantlab-compact-stk-euc1
+manifest_path: s3://quantlab-compact-stk-euc1/compacted/_manifest.json
+
+output_bucket: quantlab-research
+output_root: s3://quantlab-research
+
+exchanges:
+  - binance
+  - bybit
+  - okx
+
+streams:
+  - bbo
+  - trade
+  - mark_price
+  - funding
+  - open_interest
+
+binance_open_interest_supported: false
+
+outputs:
+  price_1s: s3://quantlab-research/price_1s
+  events_map: s3://quantlab-research/events_map
+  pre_event_windows: s3://quantlab-research/pre_event_windows
+  normal_time_comparison: s3://quantlab-research/normal_time_comparison
