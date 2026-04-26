@@ -87,11 +87,12 @@ Validate the bundle:
 databricks bundle validate -t dev --profile quantlab-dev
 ```
 
-Deploy/run only after providing an existing cluster ID:
+Deploy/run uses an ephemeral Databricks job cluster. The cluster starts for the
+job run and terminates when the run finishes.
 
 ```bash
-databricks bundle deploy -t dev --profile quantlab-dev --var cluster_id=<CLUSTER_ID>
-databricks bundle run phase1_manifest_trade_btc_probe -t dev --profile quantlab-dev --var cluster_id=<CLUSTER_ID>
+databricks bundle deploy -t dev --profile quantlab-dev
+databricks bundle run phase1_manifest_trade_btc_probe -t dev --profile quantlab-dev
 ```
 
 ## Local Development
