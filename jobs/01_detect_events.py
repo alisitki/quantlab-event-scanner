@@ -14,6 +14,13 @@ import sys
 from pathlib import Path
 
 
+def _script_path() -> Path | None:
+    script_name = globals().get("__file__") or globals().get("filename")
+    if not isinstance(script_name, str):
+        return None
+    return Path(script_name).resolve()
+
+
 def _bootstrap_src_path() -> None:
     job_file = _script_path()
     candidates = [Path.cwd() / "src"]
@@ -96,13 +103,6 @@ def _resolve_path(path: str) -> Path:
             return resolved
 
     raise FileNotFoundError(f"Config file not found: {path}")
-
-
-def _script_path() -> Path | None:
-    script_name = globals().get("__file__") or globals().get("filename")
-    if not isinstance(script_name, str):
-        return None
-    return Path(script_name).resolve()
 
 
 def _get_spark_session():
