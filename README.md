@@ -49,10 +49,10 @@ Replace `<DATABRICKS_WORKSPACE_URL>` with the real workspace URL. The preferred
 local profile name is `quantlab-dev`. A production profile can be added later as
 `quantlab-prod`.
 
-Validate the bundle after authentication:
+Validate the serverless development bundle after authentication:
 
 ```bash
-databricks bundle validate -t dev --profile quantlab-dev
+databricks bundle validate -t dev_serverless --profile quantlab-dev
 ```
 
 Bundle deploy and run commands are not part of Phase 0.5.
@@ -81,19 +81,33 @@ Manifest v2 consumer semantics are documented in
 It does not calculate z-scores, rolling windows, aggregations, events, features,
 or write any S3 output.
 
-Validate the bundle:
+This probe can run on either compute model:
+
+- Serverless workflow compute for lightweight probes.
+- Classic cluster compute for heavier Spark runs where runtime and node control
+  matter.
+
+Validate/deploy/run on the serverless workspace:
 
 ```bash
-databricks bundle validate -t dev --profile quantlab-dev
+databricks bundle validate -t dev_serverless --profile quantlab-dev
+databricks bundle deploy -t dev_serverless --profile quantlab-dev
+databricks bundle run phase1_manifest_trade_btc_probe_serverless -t dev_serverless --profile quantlab-dev
 ```
 
-Deploy/run uses an existing classic Databricks cluster. The current dev default
-cluster is auto-terminating and can be overridden with `--var cluster_id=...`.
+Validate/deploy/run on the classic workspace:
 
 ```bash
-databricks bundle deploy -t dev --profile quantlab-dev
-databricks bundle run phase1_manifest_trade_btc_probe -t dev --profile quantlab-dev
+databricks clusters start 0426-145152-cv6y6ado --profile quantlab-classic
+databricks bundle validate -t dev_classic --profile quantlab-classic
+databricks bundle deploy -t dev_classic --profile quantlab-classic
+databricks bundle run phase1_manifest_trade_btc_probe_classic -t dev_classic --profile quantlab-classic
+databricks clusters delete 0426-145152-cv6y6ado --profile quantlab-classic
 ```
+
+The classic cluster ID is a development default, not a secret, and can be
+overridden with `--var cluster_id=...`. Classic clusters should normally be
+terminated after runs to avoid idle cost.
 
 ## Local Development
 
