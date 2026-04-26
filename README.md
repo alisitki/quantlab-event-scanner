@@ -87,8 +87,8 @@ Validate the bundle:
 databricks bundle validate -t dev --profile quantlab-dev
 ```
 
-Deploy/run uses Databricks serverless workflow compute. The workspace manages
-compute for the job run; no all-purpose cluster or cluster ID is required.
+Deploy/run uses an existing classic Databricks cluster. The current dev default
+cluster is auto-terminating and can be overridden with `--var cluster_id=...`.
 
 ```bash
 databricks bundle deploy -t dev --profile quantlab-dev

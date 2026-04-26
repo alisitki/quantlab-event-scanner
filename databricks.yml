@@ -5,15 +5,9 @@ resources:
   jobs:
     phase1_manifest_trade_btc_probe:
       name: phase1_manifest_trade_btc_probe
-      environments:
-        - environment_key: phase1_probe_environment
-          spec:
-            environment_version: "2"
-            dependencies:
-              - pyyaml>=6.0
       tasks:
         - task_key: probe_latest_btc_trade
-          environment_key: phase1_probe_environment
+          existing_cluster_id: ${var.cluster_id}
           spark_python_task:
             python_file: jobs/01_detect_events.py
             parameters:
@@ -21,6 +15,11 @@ resources:
               - configs/dev.yaml
               - --sample-size
               - "20"
+
+variables:
+  cluster_id:
+    description: Existing classic Databricks cluster ID for probe runs.
+    default: 0426-145152-cv6y6ado
 
 targets:
   dev:
