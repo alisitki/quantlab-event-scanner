@@ -95,7 +95,8 @@ def load_manifest_from_s3_with_spark(spark: Any, manifest_path: str) -> Manifest
 
     payload = _read_text_file_with_spark(spark, manifest_path)
     if not payload.strip():
-        raise ValueError(f"Manifest at {manifest_path} is empty.")
+        status = _file_status_summary(spark, manifest_path)
+        raise ValueError(f"Manifest at {manifest_path} is empty. {status}")
 
     try:
         loaded = json.loads(payload)
@@ -210,11 +211,31 @@ def _optional_string(value: Any) -> str | None:
 
 
 def _read_text_file_with_spark(spark: Any, path: str) -> str:
+    dbutils_payload = _read_text_file_with_dbutils(spark, path)
+    if dbutils_payload is not None:
+        return dbutils_payload
+
     if hasattr(spark, "_jvm") and hasattr(spark, "_jsc"):
         return _read_text_file_with_hadoop(spark, path)
 
     rows = spark.read.text(path).collect()
     return "\n".join(_row_value(row) for row in rows)
+
+
+def _read_text_file_with_dbutils(spark: Any, path: str) -> str | None:
+    dbutils = globals().get("dbutils")
+    if dbutils is None:
+        try:
+            from pyspark.dbutils import DBUtils
+
+            dbutils = DBUtils(spark)
+        except Exception:
+            return None
+
+    try:
+        return dbutils.fs.head(path, 20 * 1024 * 1024)
+    except Exception:
+        return None
 
 
 def _read_text_file_with_hadoop(spark: Any, path: str) -> str:
@@ -234,6 +255,24 @@ def _read_text_file_with_hadoop(spark: Any, path: str) -> str:
             scanner.close()
     finally:
         stream.close()
+
+
+def _file_status_summary(spark: Any, path: str) -> str:
+    if not (hasattr(spark, "_jvm") and hasattr(spark, "_jsc")):
+        return "File status unavailable without JVM Spark context."
+
+    try:
+        jvm = spark._jvm
+        hadoop_conf = spark._jsc.hadoopConfiguration()
+        hadoop_path = jvm.org.apache.hadoop.fs.Path(path)
+        filesystem = hadoop_path.getFileSystem(hadoop_conf)
+        status = filesystem.getFileStatus(hadoop_path)
+        return (
+            f"File status: exists=true, length={status.getLen()}, "
+            f"isDirectory={status.isDirectory()}."
+        )
+    except Exception as exc:
+        return f"File status unavailable: {exc}."
 
 
 def _row_value(row: Any) -> str:
