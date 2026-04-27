@@ -147,6 +147,120 @@ Verified on 2026-04-26 against `dev_classic`:
 - Sequence/time ordering out-of-order counts: `0` for all selected exchanges.
 - No S3 output was written.
 
+## Phase 1C - BTC trade move candidate scan
+
+Phase 1C scans fixed-date BTC trade data for log-only +/-1% move candidates.
+It reads `date=20260423`, `stream=trade`, and configured BTC symbols on
+`binance`, `bybit`, and `okx`; builds 1-second OHLCV rows; checks whether each
+second reaches +1% or -1% within the next 60 seconds; logs raw and approximate
+grouped candidate summaries; and writes no S3 output.
+
+Serverless is the default compute path for this phase because the scan reduces
+the known `20260423` trade input to roughly 1-second rows before candidate
+summary logging. Classic cluster compute remains available as a fallback if
+serverless hits access or runtime limits.
+
+Validate/deploy/run on the serverless workspace:
+
+```bash
+databricks bundle validate -t dev_serverless --profile quantlab-dev
+databricks bundle deploy -t dev_serverless --profile quantlab-dev
+databricks bundle run phase1_btc_trade_move_candidates_serverless -t dev_serverless --profile quantlab-dev
+```
+
+Fallback validate/deploy/run on the classic workspace:
+
+```bash
+databricks clusters start 0426-145152-cv6y6ado --profile quantlab-classic
+databricks bundle validate -t dev_classic --profile quantlab-classic
+databricks bundle deploy -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+databricks bundle run phase1_btc_trade_move_candidates_classic -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+```
+
+Verified on 2026-04-27 against `dev_serverless`:
+
+- Run result: `TERMINATED SUCCESS`.
+- Selected date: `20260423`.
+- Selected exchanges: `binance`, `bybit`, `okx`.
+- Total selected trade rows: `5,578,439`.
+- 1-second price rows: `216,633`.
+- Raw candidates: `60`.
+- Candidate direction: `DOWN`.
+- Ambiguous candidates: `0`.
+- Approx grouped candidates: `1`.
+- No S3 output was written.
+
+## Phase 1D - Trial event map write
+
+Phase 1D writes the first trial event outputs to S3. It reuses the Phase 1C
+trade candidate scan, writes non-ambiguous raw candidates to
+`s3://quantlab-research/raw_candidates/_trial/run_id=<run_id>/`, writes grouped
+trial events to `s3://quantlab-research/events_map/_trial/run_id=<run_id>/`,
+then reads both paths back and verifies row counts, schemas, and samples.
+
+This is still not the production `events_map`; it is a trial write/readback
+check. Phase 1D uses classic cluster compute as the primary run path.
+
+Validate/deploy/run on the classic workspace:
+
+```bash
+databricks clusters start 0426-145152-cv6y6ado --profile quantlab-classic
+databricks bundle validate -t dev_classic --profile quantlab-classic
+databricks bundle deploy -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+databricks bundle run phase1_trial_event_map_classic -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+```
+
+Verified on 2026-04-27 against `dev_classic`:
+
+- Run result: `TERMINATED SUCCESS`.
+- Run ID: `phase1d_20260427T063442Z`.
+- Raw candidates output:
+  `s3://quantlab-research/raw_candidates/_trial/run_id=phase1d_20260427T063442Z`.
+- Trial event map output:
+  `s3://quantlab-research/events_map/_trial/run_id=phase1d_20260427T063442Z`.
+- Raw candidates written/read back: `60`.
+- Grouped events written/read back: `1`.
+- Trial event ID: `binance_btcusdt_20260423_down_001`.
+- Selected date: `20260423`; coverage count: `3`.
+
+## Phase 2A - Trial pre-event window extraction
+
+Phase 2A reads one trial event map row, derives the UTC pre-event window, reads
+the BTC trade partitions touched by that window, writes row-level trial
+pre-event windows to `s3://quantlab-research/pre_event_windows/_trial/`, and
+reads the output back for count/schema/sample verification. This phase is
+trade-only and runs on classic cluster compute.
+
+Validate/deploy/run on the classic workspace:
+
+```bash
+databricks clusters start 0426-145152-cv6y6ado --profile quantlab-classic
+databricks bundle validate -t dev_classic --profile quantlab-classic
+databricks bundle deploy -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+databricks bundle run phase2a_pre_event_windows_trial_classic -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+```
+
+Verified on 2026-04-27 against `dev_classic`:
+
+- Run result: `TERMINATED SUCCESS`.
+- Source event run ID: `phase1d_20260427T063442Z`.
+- Source event ID: `binance_btcusdt_20260423_down_001`.
+- Output path:
+  `s3://quantlab-research/pre_event_windows/_trial/run_id=phase2a_20260427T071919Z`.
+- Spark session timezone: `UTC`.
+- Window: `2026-04-23 09:59:10 <= ts_event_ts < 2026-04-23 10:04:10`.
+- Derived partition dates: `20260423`.
+- Extracted rows written/read back: `15,072`.
+- Counts by exchange: `binance=3,787`, `bybit=5,518`, `okx=5,767`.
+- Output includes `ts_recv_ts`, `seconds_before_event`, and `source_partition_date`.
+
+## Classic Cluster Notes
+
+The current classic cluster is `0426-145152-cv6y6ado`. On 2026-04-27,
+`autotermination_minutes` was set to `0` to avoid repeated 8-10 minute startup
+delays during active development. Re-enable autotermination or terminate the
+cluster manually when the active development block ends.
+
 ## Local Development
 
 Install the package with development dependencies:

@@ -32,10 +32,28 @@ def events_map_path(config: ScannerConfig) -> str:
     return output_path(config, "events_map")
 
 
+def events_map_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial event map output path for a run."""
+
+    return f"{events_map_path(config)}/_trial/run_id={run_id}"
+
+
+def raw_candidates_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial raw candidates output path for a run."""
+
+    return f"{config.output_root}/raw_candidates/_trial/run_id={run_id}"
+
+
 def pre_event_windows_path(config: ScannerConfig) -> str:
     """Return the configured pre-event windows output path."""
 
     return output_path(config, "pre_event_windows")
+
+
+def pre_event_windows_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial pre-event windows output path for a run."""
+
+    return f"{pre_event_windows_path(config)}/_trial/run_id={run_id}"
 
 
 def normal_time_comparison_path(config: ScannerConfig) -> str:

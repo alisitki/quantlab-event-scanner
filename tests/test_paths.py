@@ -2,11 +2,14 @@ from quantlab_event_scanner.config import validate_config
 from quantlab_event_scanner.paths import (
     compacted_partition_path,
     events_map_path,
+    events_map_trial_run_path,
     manifest_path,
     normal_time_comparison_path,
     output_path,
     pre_event_windows_path,
+    pre_event_windows_trial_run_path,
     price_1s_path,
+    raw_candidates_trial_run_path,
 )
 
 
@@ -46,6 +49,20 @@ def test_manifest_and_output_paths_come_from_config() -> None:
     assert pre_event_windows_path(config) == "s3://quantlab-research/pre_event_windows"
     assert normal_time_comparison_path(config) == (
         "s3://quantlab-research/normal_time_comparison"
+    )
+
+
+def test_trial_output_paths_are_partitioned_by_run_id() -> None:
+    config = _config()
+
+    assert events_map_trial_run_path(config, "phase1d_test") == (
+        "s3://quantlab-research/events_map/_trial/run_id=phase1d_test"
+    )
+    assert raw_candidates_trial_run_path(config, "phase1d_test") == (
+        "s3://quantlab-research/raw_candidates/_trial/run_id=phase1d_test"
+    )
+    assert pre_event_windows_trial_run_path(config, "phase2a_test") == (
+        "s3://quantlab-research/pre_event_windows/_trial/run_id=phase2a_test"
     )
 
 
