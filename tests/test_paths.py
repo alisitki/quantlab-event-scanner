@@ -6,6 +6,7 @@ from quantlab_event_scanner.paths import (
     manifest_path,
     normal_time_comparison_path,
     output_path,
+    pre_event_bbo_windows_trial_run_path,
     pre_event_windows_path,
     pre_event_windows_trial_run_path,
     price_1s_path,
@@ -63,6 +64,9 @@ def test_trial_output_paths_are_partitioned_by_run_id() -> None:
     )
     assert pre_event_windows_trial_run_path(config, "phase2a_test") == (
         "s3://quantlab-research/pre_event_windows/_trial/run_id=phase2a_test"
+    )
+    assert pre_event_bbo_windows_trial_run_path(config, "phase2b_test") == (
+        "s3://quantlab-research/pre_event_bbo_windows/_trial/run_id=phase2b_test"
     )
 
 

@@ -254,12 +254,47 @@ Verified on 2026-04-27 against `dev_classic`:
 - Counts by exchange: `binance=3,787`, `bybit=5,518`, `okx=5,767`.
 - Output includes `ts_recv_ts`, `seconds_before_event`, and `source_partition_date`.
 
+## Phase 2B - Trial BBO pre-event window extraction
+
+Phase 2B reads the same trial event map row and extracts the matching BTC `bbo`
+pre-event window for `binance`, `bybit`, and `okx`. It writes row-level trial
+BBO windows to `s3://quantlab-research/pre_event_bbo_windows/_trial/`, includes
+basic BBO profile columns, and reads the output back for count/schema/sample
+verification.
+
+Validate/deploy/run on the classic workspace:
+
+```bash
+databricks clusters start 0426-145152-cv6y6ado --profile quantlab-classic
+databricks bundle validate -t dev_classic --profile quantlab-classic
+databricks bundle deploy -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+databricks bundle run phase2b_pre_event_bbo_windows_trial_classic -t dev_classic --profile quantlab-classic --var cluster_id=0426-145152-cv6y6ado
+```
+
+Verified on 2026-04-27 against `dev_classic`:
+
+- Run result: `TERMINATED SUCCESS`.
+- Source event run ID: `phase1d_20260427T063442Z`.
+- Source event ID: `binance_btcusdt_20260423_down_001`.
+- Output path:
+  `s3://quantlab-research/pre_event_bbo_windows/_trial/run_id=phase2b_20260427T074205Z`.
+- Spark session timezone: `UTC`.
+- Window: `2026-04-23 09:59:10 <= ts_event_ts < 2026-04-23 10:04:10`.
+- Derived partition dates: `20260423`.
+- Selected BBO exchange coverage: `binance`, `bybit`, `okx`.
+- Extracted rows written/read back: `103,067`.
+- Counts by exchange: `binance=99,822`, `bybit=922`, `okx=2,323`.
+- Null summary for timestamp, BBO, and derived BBO fields: all `0`.
+- `spread < 0` rows: `0`.
+- Spread range: `0.10` to `13.30`; average spread: `0.1169`.
+
 ## Classic Cluster Notes
 
 The current classic cluster is `0426-145152-cv6y6ado`. On 2026-04-27,
 `autotermination_minutes` was set to `0` to avoid repeated 8-10 minute startup
 delays during active development. Re-enable autotermination or terminate the
-cluster manually when the active development block ends.
+cluster manually when the active development block ends. The cluster was
+terminated after the successful Phase 2B trial run.
 
 ## Local Development
 

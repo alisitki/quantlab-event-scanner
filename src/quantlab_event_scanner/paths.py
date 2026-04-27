@@ -56,6 +56,12 @@ def pre_event_windows_trial_run_path(config: ScannerConfig, run_id: str) -> str:
     return f"{pre_event_windows_path(config)}/_trial/run_id={run_id}"
 
 
+def pre_event_bbo_windows_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial BBO pre-event windows output path for a run."""
+
+    return f"{config.output_root}/pre_event_bbo_windows/_trial/run_id={run_id}"
+
+
 def normal_time_comparison_path(config: ScannerConfig) -> str:
     """Return the configured normal-time comparison output path."""
 

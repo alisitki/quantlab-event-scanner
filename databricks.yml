@@ -151,6 +151,27 @@ targets:
                   - --sample-size
                   - "20"
 
+        phase2b_pre_event_bbo_windows_trial_classic:
+          name: phase2b_pre_event_bbo_windows_trial_classic
+          tasks:
+            - task_key: extract_pre_event_bbo_windows_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/06_extract_pre_event_bbo_windows_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --source-event-run-id
+                  - phase1d_20260427T063442Z
+                  - --event-id
+                  - binance_btcusdt_20260423_down_001
+                  - --lookback-seconds
+                  - "300"
+                  - --allow-partial-coverage
+                  - "false"
+                  - --sample-size
+                  - "20"
+
   prod:
     mode: production
     workspace:
