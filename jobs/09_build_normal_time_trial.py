@@ -1304,13 +1304,34 @@ def _log_normal_window_counts(
     )
 
 
-def _write_and_validate(frame: DataFrame, path: str, label: str, sample_size: int) -> None:
-    output_count = frame.count()
-    LOGGER.info("%s output row count: %s", label, output_count)
+def _write_and_validate(
+    frame: DataFrame,
+    path: str,
+    label: str,
+    sample_size: int,
+    *,
+    validation_mode: str = "strict",
+    row_count: int | None = None,
+) -> int | None:
+    if validation_mode not in {"strict", "light"}:
+        raise ValueError("validation_mode must be 'strict' or 'light'.")
+
+    output_count = row_count
+    if output_count is None and validation_mode == "strict":
+        output_count = frame.count()
+    output_count_log = output_count if output_count is not None else "not_counted"
+    LOGGER.info("%s output row count: %s", label, output_count_log)
     if output_count == 0:
         raise RuntimeError(f"{label} output row count is 0.")
+    LOGGER.info("[PHASE2J_OUTPUT] name=%s path=%s rows=%s validation_mode=%s", label, path, output_count_log, validation_mode)
+    LOGGER.info("%s output schema:", label)
+    frame.printSchema()
     LOGGER.info("Writing %s: %s", label, path)
     frame.write.mode("errorifexists").parquet(path)
+    if validation_mode == "light":
+        LOGGER.info("%s light validation complete; skipped readback count and sample take.", label)
+        return output_count
+
     readback = frame.sparkSession.read.parquet(path)
     LOGGER.info("%s readback schema:", label)
     readback.printSchema()
@@ -1321,6 +1342,7 @@ def _write_and_validate(frame: DataFrame, path: str, label: str, sample_size: in
             f"{label} readback count mismatch: expected={output_count}, actual={readback_count}"
         )
     _show_df(f"{label} readback sample:", readback, sample_size)
+    return output_count
 
 
 def _show_df(label: str, frame: DataFrame, rows: int = 20) -> None:

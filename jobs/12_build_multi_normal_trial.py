@@ -7,7 +7,9 @@ import argparse
 import importlib.util
 import logging
 import sys
+import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -136,6 +138,33 @@ TOP_DIFF_TIE_BREAKER_COLUMNS = (
     "to_bucket",
 )
 
+PHASE2J_PROFILE_AUDIT_COLUMNS = (
+    "run_id",
+    "source_snapshot_run_id",
+    "sample_type",
+    "selected_date",
+    "event_id",
+    "event_direction",
+    "event_start_ts",
+    "normal_window_start_ts",
+    "normal_window_end_ts",
+    "normal_anchor_ts",
+    "profile_version",
+    "created_at",
+)
+
+PHASE2J_METADATA_COLUMNS = (
+    "normal_sample_id",
+    "normal_sample_rank",
+    "activity_distance",
+    "nearest_candidate_distance_seconds",
+    "selected_normal_count",
+    "min_anchor_spacing_seconds",
+)
+PHASE2J_EXTRA_METADATA_COLUMNS = tuple(
+    column for column in PHASE2J_METADATA_COLUMNS if column != "nearest_candidate_distance_seconds"
+)
+
 
 @dataclass(frozen=True)
 class Phase2JNormalMetadata:
@@ -153,6 +182,16 @@ class Phase2JNormalMetadata:
     activity_distance: float
     selected_normal_count: int
     min_anchor_spacing_seconds: int
+
+
+@contextmanager
+def _phase2j_timer(step: str) -> Any:
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        elapsed = time.monotonic() - start
+        LOGGER.info("[PHASE2J_TIMER] step=%s seconds=%.3f", step, elapsed)
 
 
 def main() -> None:
@@ -193,124 +232,145 @@ def main() -> None:
     LOGGER.info("Profile output path: %s", profile_output_path)
     LOGGER.info("Comparison output path: %s", comparison_output_path)
     LOGGER.info("Top diff output path: %s", top_diff_output_path)
+    LOGGER.info("Validation mode: %s", args.validation_mode)
 
     spark = _get_spark_session()
     spark.conf.set("spark.sql.session.timeZone", "UTC")
     LOGGER.info("Spark timezone: %s", spark.conf.get("spark.sql.session.timeZone"))
+    _log_spark_runtime_context(spark, run_id)
 
-    event_exchange = _read_event_profile_subtable(
-        spark,
-        event_profile_path,
-        "exchange_profile",
-        args.event_id,
-    ).cache()
-    event_cross = _read_event_profile_subtable(
-        spark,
-        event_profile_path,
-        "cross_exchange_mid_diff",
-        args.event_id,
-    ).cache()
-    event_bucket = _read_event_profile_subtable(
-        spark,
-        event_profile_path,
-        "bucket_change_profile",
-        args.event_id,
-    ).cache()
-    event_activity = _event_activity_source(event_exchange, config.exchanges).cache()
+    with _phase2j_timer("manifest_event_profile_load"):
+        event_exchange = _read_event_profile_subtable(
+            spark,
+            event_profile_path,
+            "exchange_profile",
+            args.event_id,
+        ).cache()
+        event_cross = _read_event_profile_subtable(
+            spark,
+            event_profile_path,
+            "cross_exchange_mid_diff",
+            args.event_id,
+        ).cache()
+        event_bucket = _read_event_profile_subtable(
+            spark,
+            event_profile_path,
+            "bucket_change_profile",
+            args.event_id,
+        ).cache()
+        event_activity = _event_activity_source(event_exchange, config.exchanges).cache()
+        _log_df_metrics("event_exchange", event_exchange, include_count=True, exchange=True, symbol=True)
+        _log_df_metrics("event_cross", event_cross, include_count=True)
+        _log_df_metrics("event_bucket", event_bucket, include_count=True, exchange=True, symbol=True)
+        _log_df_metrics("event_activity", event_activity, include_count=True, exchange=True)
 
-    manifest = load_manifest_from_s3_with_spark(spark, config.manifest_path)
-    trade_partitions = _select_partitions(
-        manifest.partitions,
-        exchanges=config.exchanges,
-        stream="trade",
-        date=args.date,
-    )
-    bbo_partitions = _select_partitions(
-        manifest.partitions,
-        exchanges=config.exchanges,
-        stream="bbo",
-        date=args.date,
-    )
+    with _phase2j_timer("manifest_load"):
+        manifest = load_manifest_from_s3_with_spark(spark, config.manifest_path)
+    with _phase2j_timer("raw_trade_path_selection"):
+        trade_partitions = _select_partitions(
+            manifest.partitions,
+            exchanges=config.exchanges,
+            stream="trade",
+            date=args.date,
+        )
+    with _phase2j_timer("raw_bbo_path_selection"):
+        bbo_partitions = _select_partitions(
+            manifest.partitions,
+            exchanges=config.exchanges,
+            stream="bbo",
+            date=args.date,
+        )
     _log_partition_coverage("trade manifest", config.exchanges, trade_partitions)
     _log_partition_coverage("BBO manifest", config.exchanges, bbo_partitions)
 
-    trade_day = _read_partitions(spark, trade_partitions, config.input_root, "trade").cache()
-    bbo_day = _read_partitions(spark, bbo_partitions, config.input_root, "BBO").cache()
+    with _phase2j_timer("trade_day_read_cache_materialize"):
+        trade_day = _read_partitions(spark, trade_partitions, config.input_root, "trade").cache()
+        _log_df_metrics("trade_day", trade_day, include_count=True, exchange=True, symbol=True)
+    with _phase2j_timer("bbo_day_read_cache_materialize"):
+        bbo_day = _read_partitions(spark, bbo_partitions, config.input_root, "BBO").cache()
+        _log_df_metrics("bbo_day", bbo_day, include_count=True, exchange=True, symbol=True)
     _validate_required_trade_columns(trade_day)
     _validate_required_bbo_columns(bbo_day)
 
-    price_1s = build_price_1s(trade_day)
-    if price_1s is None:
-        raise RuntimeError("Unable to build 1s price rows for normal window selection.")
-    price_1s = price_1s.cache()
-    price_1s_count = price_1s.count()
+    with _phase2j_timer("price_1s_build"):
+        price_1s = build_price_1s(trade_day)
+        if price_1s is None:
+            raise RuntimeError("Unable to build 1s price rows for normal window selection.")
+        price_1s = price_1s.cache()
+        price_1s_count = _log_df_metrics("price_1s", price_1s, include_count=True, exchange=True, symbol=True)
     LOGGER.info("Phase 2J price_1s_count: %s", price_1s_count)
     if price_1s_count == 0:
         raise RuntimeError("1s price row count is 0.")
 
-    candidates, ambiguous = scan_move_candidates(
-        price_1s,
-        threshold_pct=args.threshold_pct,
-        lookahead_seconds=args.horizon_seconds,
-    )
-    candidates = candidates.cache()
-    ambiguous = ambiguous.cache()
-    non_ambiguous_candidate_count = candidates.count()
-    ambiguous_count = ambiguous.count()
-    raw_candidate_count = non_ambiguous_candidate_count + ambiguous_count
-    candidate_starts = _collect_raw_candidate_starts(candidates, ambiguous)
+    with _phase2j_timer("candidate_scan"):
+        candidates, ambiguous = scan_move_candidates(
+            price_1s,
+            threshold_pct=args.threshold_pct,
+            lookahead_seconds=args.horizon_seconds,
+        )
+        candidates = candidates.cache()
+        ambiguous = ambiguous.cache()
+        non_ambiguous_candidate_count = _log_df_metrics("candidate_df", candidates, include_count=True)
+        ambiguous_count = _log_df_metrics("ambiguous_candidate_df", ambiguous, include_count=True)
+        raw_candidate_count = non_ambiguous_candidate_count + ambiguous_count
+        candidate_starts = _collect_raw_candidate_starts(candidates, ambiguous)
     LOGGER.info("Phase 2J raw candidate count: %s", raw_candidate_count)
     LOGGER.info("Phase 2J non-ambiguous candidate count: %s", non_ambiguous_candidate_count)
     LOGGER.info("Phase 2J ambiguous candidate count: %s", ambiguous_count)
     LOGGER.info("Phase 2J distinct raw candidate start count: %s", len(candidate_starts))
 
-    anchor_candidates, anchor_exclusion_counts, total_anchors = _eligible_anchor_candidates(
-        price_1s,
-        candidate_starts,
-        selected_date=args.date,
-        lookback_seconds=args.lookback_seconds,
-        horizon_seconds=args.horizon_seconds,
-        proximity_seconds=args.proximity_seconds,
-        anchor_step_seconds=args.anchor_step_seconds,
-    )
+    with _phase2j_timer("anchor_eligibility"):
+        anchor_candidates, anchor_exclusion_counts, total_anchors = _eligible_anchor_candidates(
+            price_1s,
+            candidate_starts,
+            selected_date=args.date,
+            lookback_seconds=args.lookback_seconds,
+            horizon_seconds=args.horizon_seconds,
+            proximity_seconds=args.proximity_seconds,
+            anchor_step_seconds=args.anchor_step_seconds,
+        )
     LOGGER.info("Phase 2J total anchor candidates enumerated: %s", total_anchors)
     LOGGER.info("Phase 2J eligible anchor candidate count: %s", len(anchor_candidates))
+    LOGGER.info(
+        "[PHASE2J_DF] name=eligible_anchors rows=%s partitions=not_dataframe schema=normal_anchor_ts",
+        len(anchor_candidates),
+    )
     LOGGER.info("Phase 2J exclusion count by reason: %s", anchor_exclusion_counts)
     if not anchor_candidates:
         raise RuntimeError("No eligible normal anchor candidates found.")
 
-    activity_ranked_candidates = _activity_ranked_anchor_candidates(
-        trade_day,
-        event_activity,
-        config.exchanges,
-        anchor_candidates,
-        candidate_starts,
-        lookback_seconds=args.lookback_seconds,
-    )
+    with _phase2j_timer("activity_ranking"):
+        activity_ranked_candidates = _activity_ranked_anchor_candidates(
+            trade_day,
+            event_activity,
+            config.exchanges,
+            anchor_candidates,
+            candidate_starts,
+            lookback_seconds=args.lookback_seconds,
+        )
     LOGGER.info("Phase 2J activity-ranked candidate count: %s", len(activity_ranked_candidates))
-
-    (
-        selected,
-        quality_failure_counts,
-        quality_probe_count,
-        quality_pass_count,
-        spacing_skipped_count,
-    ) = _select_quality_passed_candidates(
-        phase2e,
-        trade_day,
-        bbo_day,
-        config.exchanges,
-        args.date,
-        run_id,
-        created_at,
-        activity_ranked_candidates,
-        candidate_starts,
-        lookback_seconds=args.lookback_seconds,
-        excluded_candidate_count=total_anchors - len(anchor_candidates),
-        selected_normal_count=args.selected_normal_count,
-        min_anchor_spacing_seconds=args.min_anchor_spacing_seconds,
-        max_quality_candidates=args.max_quality_candidates,
+    LOGGER.info(
+        "[PHASE2J_DF] name=ranked_anchors rows=%s partitions=not_dataframe schema=normal_anchor_ts,activity_distance,nearest_candidate_distance_seconds",
+        len(activity_ranked_candidates),
     )
+
+    with _phase2j_timer("quality_probe"):
+        (
+            selected,
+            quality_failure_counts,
+            quality_probe_count,
+            quality_pass_count,
+            spacing_skipped_count,
+        ) = _select_quality_passed_candidates(
+            trade_day,
+            bbo_day,
+            config.exchanges,
+            activity_ranked_candidates,
+            lookback_seconds=args.lookback_seconds,
+            selected_normal_count=args.selected_normal_count,
+            min_anchor_spacing_seconds=args.min_anchor_spacing_seconds,
+            max_quality_candidates=args.max_quality_candidates,
+        )
     LOGGER.info("Phase 2J quality probes attempted: %s", quality_probe_count)
     LOGGER.info("Phase 2J quality-failed count by reason: %s", dict(sorted(quality_failure_counts.items())))
     LOGGER.info("Phase 2J quality-passing candidate count: %s", quality_pass_count)
@@ -324,156 +384,203 @@ def main() -> None:
             f"expected={args.selected_normal_count}, observed={len(selected)}"
         )
 
-    (
-        normal_trade,
-        normal_bbo,
-        normal_snapshot,
-        normal_exchange,
-        normal_cross,
-        normal_bucket,
-    ) = _build_selected_outputs(
-        phase2e,
-        trade_day,
-        bbo_day,
-        config.exchanges,
-        args.date,
-        run_id,
-        created_at,
-        selected,
-        candidate_starts,
-        lookback_seconds=args.lookback_seconds,
-        excluded_candidate_count=total_anchors - len(anchor_candidates),
-        selected_normal_count=args.selected_normal_count,
-        min_anchor_spacing_seconds=args.min_anchor_spacing_seconds,
-    )
+    with _phase2j_timer("selected_normal_extraction"):
+        (
+            normal_trade,
+            normal_bbo,
+            normal_snapshot,
+            normal_exchange,
+            normal_cross,
+            normal_bucket,
+        ) = _build_selected_outputs(
+            phase2e,
+            trade_day,
+            bbo_day,
+            config.exchanges,
+            args.date,
+            run_id,
+            created_at,
+            selected,
+            candidate_starts,
+            lookback_seconds=args.lookback_seconds,
+            excluded_candidate_count=total_anchors - len(anchor_candidates),
+            selected_normal_count=args.selected_normal_count,
+            min_anchor_spacing_seconds=args.min_anchor_spacing_seconds,
+        )
+        _log_df_metrics("normal_trade_windows", normal_trade, normal_sample_id=True, exchange=True, symbol=True)
+        _log_df_metrics("normal_bbo_windows", normal_bbo, normal_sample_id=True, exchange=True, symbol=True)
+        _log_df_metrics("multi_normal_market_snapshots", normal_snapshot, normal_sample_id=True, exchange=True, symbol=True)
+        _log_df_metrics("exchange_profile", normal_exchange, normal_sample_id=True, exchange=True, symbol=True)
+        _log_df_metrics("cross_exchange_mid_diff", normal_cross, normal_sample_id=True)
+        _log_df_metrics("bucket_change_profile", normal_bucket, normal_sample_id=True, exchange=True, symbol=True)
 
-    _validate_selected_output_counts(
-        normal_snapshot,
-        normal_exchange,
-        normal_cross,
-        normal_bucket,
-        exchange_count=len(config.exchanges),
-        lookback_seconds=args.lookback_seconds,
-        selected_normal_count=args.selected_normal_count,
-    )
+    with _phase2j_timer("selected_output_count_validation"):
+        selected_output_counts = _validate_selected_output_counts(
+            normal_snapshot,
+            normal_exchange,
+            normal_cross,
+            normal_bucket,
+            exchange_count=len(config.exchanges),
+            lookback_seconds=args.lookback_seconds,
+            selected_normal_count=args.selected_normal_count,
+        )
 
-    phase2e._write_and_validate(
-        normal_trade,
-        f"{windows_output_path}/trade_windows",
-        "multi_normal_windows.trade_windows",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        normal_bbo,
-        f"{windows_output_path}/bbo_windows",
-        "multi_normal_windows.bbo_windows",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        normal_snapshot,
-        snapshot_output_path,
-        "multi_normal_market_snapshots",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        normal_exchange,
-        f"{profile_output_path}/exchange_profile",
-        "multi_normal_profile_reports.exchange_profile",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        normal_cross,
-        f"{profile_output_path}/cross_exchange_mid_diff",
-        "multi_normal_profile_reports.cross_exchange_mid_diff",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        normal_bucket,
-        f"{profile_output_path}/bucket_change_profile",
-        "multi_normal_profile_reports.bucket_change_profile",
-        args.sample_size,
-    )
+    with _phase2j_timer("write_validate_multi_normal_windows_trade_windows"):
+        phase2e._write_and_validate(
+            normal_trade,
+            f"{windows_output_path}/trade_windows",
+            "multi_normal_windows.trade_windows",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+        )
+    with _phase2j_timer("write_validate_multi_normal_windows_bbo_windows"):
+        phase2e._write_and_validate(
+            normal_bbo,
+            f"{windows_output_path}/bbo_windows",
+            "multi_normal_windows.bbo_windows",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+        )
+    with _phase2j_timer("write_validate_multi_normal_market_snapshots"):
+        phase2e._write_and_validate(
+            normal_snapshot,
+            snapshot_output_path,
+            "multi_normal_market_snapshots",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=selected_output_counts["multi_normal_market_snapshots"],
+        )
+    with _phase2j_timer("write_validate_multi_normal_profile_exchange_profile"):
+        phase2e._write_and_validate(
+            normal_exchange,
+            f"{profile_output_path}/exchange_profile",
+            "multi_normal_profile_reports.exchange_profile",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=selected_output_counts["multi_normal_profile_reports.exchange_profile"],
+        )
+    with _phase2j_timer("write_validate_multi_normal_profile_cross_exchange_mid_diff"):
+        phase2e._write_and_validate(
+            normal_cross,
+            f"{profile_output_path}/cross_exchange_mid_diff",
+            "multi_normal_profile_reports.cross_exchange_mid_diff",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=selected_output_counts["multi_normal_profile_reports.cross_exchange_mid_diff"],
+        )
+    with _phase2j_timer("write_validate_multi_normal_profile_bucket_change_profile"):
+        phase2e._write_and_validate(
+            normal_bucket,
+            f"{profile_output_path}/bucket_change_profile",
+            "multi_normal_profile_reports.bucket_change_profile",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=selected_output_counts["multi_normal_profile_reports.bucket_change_profile"],
+        )
 
-    exchange_comparison = _build_exchange_profile_distribution_comparison(
-        phase2f,
-        event_exchange,
-        normal_exchange,
-        run_id,
-        args.event_profile_run_id,
-        created_at,
-    ).cache()
-    cross_comparison = _build_cross_exchange_distribution_comparison(
-        phase2f,
-        event_cross,
-        normal_cross,
-        run_id,
-        args.event_profile_run_id,
-        created_at,
-    ).cache()
-    bucket_comparison = _build_bucket_change_distribution_comparison(
-        phase2f,
-        event_bucket,
-        normal_bucket,
-        run_id,
-        args.event_profile_run_id,
-        created_at,
-    ).cache()
+    with _phase2j_timer("comparison_profile_lineage_boundary_read"):
+        normal_exchange_for_comparison = spark.read.parquet(f"{profile_output_path}/exchange_profile").cache()
+        normal_cross_for_comparison = spark.read.parquet(f"{profile_output_path}/cross_exchange_mid_diff").cache()
+        normal_bucket_for_comparison = spark.read.parquet(f"{profile_output_path}/bucket_change_profile").cache()
+        LOGGER.info("Phase 2J comparison input source: persisted multi-normal profile readbacks")
+        _log_df_metrics("comparison_input_exchange_profile", normal_exchange_for_comparison, normal_sample_id=True, exchange=True, symbol=True)
+        _log_df_metrics("comparison_input_cross_exchange_mid_diff", normal_cross_for_comparison, normal_sample_id=True)
+        _log_df_metrics("comparison_input_bucket_change_profile", normal_bucket_for_comparison, normal_sample_id=True, exchange=True, symbol=True)
 
-    _validate_comparison_count(
-        exchange_comparison,
-        "multi_normal_comparison_reports.exchange_profile_comparison",
-        expected_exchange_profile_comparison_rows(),
-    )
-    _validate_normal_sample_count(
-        exchange_comparison,
-        "multi_normal_comparison_reports.exchange_profile_comparison",
-        args.selected_normal_count,
-    )
-    _validate_comparison_count(
-        cross_comparison,
-        "multi_normal_comparison_reports.cross_exchange_mid_diff_comparison",
-        expected_cross_exchange_mid_diff_comparison_rows(),
-    )
-    _validate_normal_sample_count(
-        cross_comparison,
-        "multi_normal_comparison_reports.cross_exchange_mid_diff_comparison",
-        args.selected_normal_count,
-    )
-    _validate_comparison_count(
-        bucket_comparison,
-        "multi_normal_comparison_reports.bucket_change_profile_comparison",
-        expected_bucket_change_profile_comparison_rows(),
-    )
-    _validate_normal_sample_count(
-        bucket_comparison,
-        "multi_normal_comparison_reports.bucket_change_profile_comparison",
-        args.selected_normal_count,
-    )
-    _validate_metric_group_coverage(exchange_comparison, "exchange_profile_comparison")
-    _validate_metric_group_coverage(cross_comparison, "cross_exchange_mid_diff_comparison")
-    _validate_metric_group_coverage(bucket_comparison, "bucket_change_profile_comparison")
-    _validate_absolute_diff(exchange_comparison, "exchange_profile_comparison")
-    _validate_absolute_diff(cross_comparison, "cross_exchange_mid_diff_comparison")
-    _validate_absolute_diff(bucket_comparison, "bucket_change_profile_comparison")
+    with _phase2j_timer("comparison_build"):
+        exchange_comparison = _build_exchange_profile_distribution_comparison(
+            phase2f,
+            event_exchange,
+            normal_exchange_for_comparison,
+            run_id,
+            args.event_profile_run_id,
+            created_at,
+        ).cache()
+        cross_comparison = _build_cross_exchange_distribution_comparison(
+            phase2f,
+            event_cross,
+            normal_cross_for_comparison,
+            run_id,
+            args.event_profile_run_id,
+            created_at,
+        ).cache()
+        bucket_comparison = _build_bucket_change_distribution_comparison(
+            phase2f,
+            event_bucket,
+            normal_bucket_for_comparison,
+            run_id,
+            args.event_profile_run_id,
+            created_at,
+        ).cache()
+        _log_df_metrics("exchange_profile_comparison", exchange_comparison, normal_sample_id=False)
+        _log_df_metrics("cross_exchange_mid_diff_comparison", cross_comparison, normal_sample_id=False)
+        _log_df_metrics("bucket_change_profile_comparison", bucket_comparison, normal_sample_id=False)
 
-    phase2e._write_and_validate(
-        exchange_comparison,
-        f"{comparison_output_path}/exchange_profile_comparison",
-        "multi_normal_comparison_reports.exchange_profile_comparison",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        cross_comparison,
-        f"{comparison_output_path}/cross_exchange_mid_diff_comparison",
-        "multi_normal_comparison_reports.cross_exchange_mid_diff_comparison",
-        args.sample_size,
-    )
-    phase2e._write_and_validate(
-        bucket_comparison,
-        f"{comparison_output_path}/bucket_change_profile_comparison",
-        "multi_normal_comparison_reports.bucket_change_profile_comparison",
-        args.sample_size,
-    )
+    with _phase2j_timer("comparison_validation"):
+        exchange_comparison_count = _validate_comparison_count(
+            exchange_comparison,
+            "multi_normal_comparison_reports.exchange_profile_comparison",
+            expected_exchange_profile_comparison_rows(),
+        )
+        _validate_normal_sample_count(
+            exchange_comparison,
+            "multi_normal_comparison_reports.exchange_profile_comparison",
+            args.selected_normal_count,
+        )
+        cross_comparison_count = _validate_comparison_count(
+            cross_comparison,
+            "multi_normal_comparison_reports.cross_exchange_mid_diff_comparison",
+            expected_cross_exchange_mid_diff_comparison_rows(),
+        )
+        _validate_normal_sample_count(
+            cross_comparison,
+            "multi_normal_comparison_reports.cross_exchange_mid_diff_comparison",
+            args.selected_normal_count,
+        )
+        bucket_comparison_count = _validate_comparison_count(
+            bucket_comparison,
+            "multi_normal_comparison_reports.bucket_change_profile_comparison",
+            expected_bucket_change_profile_comparison_rows(),
+        )
+        _validate_normal_sample_count(
+            bucket_comparison,
+            "multi_normal_comparison_reports.bucket_change_profile_comparison",
+            args.selected_normal_count,
+        )
+        _validate_metric_group_coverage(exchange_comparison, "exchange_profile_comparison")
+        _validate_metric_group_coverage(cross_comparison, "cross_exchange_mid_diff_comparison")
+        _validate_metric_group_coverage(bucket_comparison, "bucket_change_profile_comparison")
+        _validate_absolute_diff(exchange_comparison, "exchange_profile_comparison")
+        _validate_absolute_diff(cross_comparison, "cross_exchange_mid_diff_comparison")
+        _validate_absolute_diff(bucket_comparison, "bucket_change_profile_comparison")
+
+    with _phase2j_timer("write_validate_comparison_exchange_profile"):
+        phase2e._write_and_validate(
+            exchange_comparison,
+            f"{comparison_output_path}/exchange_profile_comparison",
+            "multi_normal_comparison_reports.exchange_profile_comparison",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=exchange_comparison_count,
+        )
+    with _phase2j_timer("write_validate_comparison_cross_exchange_mid_diff"):
+        phase2e._write_and_validate(
+            cross_comparison,
+            f"{comparison_output_path}/cross_exchange_mid_diff_comparison",
+            "multi_normal_comparison_reports.cross_exchange_mid_diff_comparison",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=cross_comparison_count,
+        )
+    with _phase2j_timer("write_validate_comparison_bucket_change_profile"):
+        phase2e._write_and_validate(
+            bucket_comparison,
+            f"{comparison_output_path}/bucket_change_profile_comparison",
+            "multi_normal_comparison_reports.bucket_change_profile_comparison",
+            args.sample_size,
+            validation_mode=args.validation_mode,
+            row_count=bucket_comparison_count,
+        )
 
     exchange_comparison_for_top_diffs = spark.read.parquet(
         f"{comparison_output_path}/exchange_profile_comparison"
@@ -495,6 +602,7 @@ def main() -> None:
         args.top_n,
         created_at,
         args.sample_size,
+        args.validation_mode,
     )
     _write_top_diffs(
         phase2e,
@@ -505,6 +613,7 @@ def main() -> None:
         args.top_n,
         created_at,
         args.sample_size,
+        args.validation_mode,
     )
     _write_top_diffs(
         phase2e,
@@ -515,6 +624,7 @@ def main() -> None:
         args.top_n,
         created_at,
         args.sample_size,
+        args.validation_mode,
     )
 
     bucket_comparison_for_top_diffs.unpersist()
@@ -523,6 +633,9 @@ def main() -> None:
     bucket_comparison.unpersist()
     cross_comparison.unpersist()
     exchange_comparison.unpersist()
+    normal_bucket_for_comparison.unpersist()
+    normal_cross_for_comparison.unpersist()
+    normal_exchange_for_comparison.unpersist()
     normal_bucket.unpersist()
     normal_cross.unpersist()
     normal_exchange.unpersist()
@@ -567,6 +680,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--sample-size", type=int, default=20)
+    parser.add_argument(
+        "--validation-mode",
+        choices=("strict", "light"),
+        default="light",
+        help="Output validation mode. Phase 2J defaults to light to avoid repeated readback actions.",
+    )
     return parser.parse_args()
 
 
@@ -609,6 +728,99 @@ def _log_partition_coverage(
     )
     if coverage.missing:
         raise RuntimeError(f"Missing required {label} coverage: {coverage.missing}")
+
+
+def _safe_spark_conf(spark: Any, key: str) -> str:
+    try:
+        return str(spark.conf.get(key))
+    except Exception as exc:  # pragma: no cover - Databricks/Spark-version dependent.
+        return f"unavailable:{type(exc).__name__}"
+
+
+def _log_spark_runtime_context(spark: Any, run_id: str) -> None:
+    context = spark.sparkContext
+    LOGGER.info("[PHASE2J_CONF] key=run_id value=%s", run_id)
+    LOGGER.info("[PHASE2J_CONF] key=spark.app.id value=%s", context.applicationId)
+    LOGGER.info("[PHASE2J_CONF] key=spark.app.name value=%s", context.appName)
+    LOGGER.info("[PHASE2J_CONF] key=spark.master value=%s", context.master)
+    for key in (
+        "spark.databricks.clusterUsageTags.clusterId",
+        "spark.databricks.clusterUsageTags.clusterName",
+        "spark.databricks.clusterUsageTags.sparkVersion",
+        "spark.databricks.clusterUsageTags.nodeType",
+        "spark.databricks.clusterUsageTags.driverNodeType",
+        "spark.databricks.clusterUsageTags.numWorkers",
+        "spark.databricks.clusterUsageTags.clusterScalingType",
+        "spark.databricks.photon.enabled",
+        "spark.sql.shuffle.partitions",
+        "spark.sql.adaptive.enabled",
+        "spark.sql.adaptive.skewJoin.enabled",
+        "spark.default.parallelism",
+    ):
+        LOGGER.info("[PHASE2J_CONF] key=%s value=%s", key, _safe_spark_conf(spark, key))
+    try:
+        executor_infos = context._jsc.sc().getExecutorMemoryStatus().size()
+        LOGGER.info("[PHASE2J_CONF] key=spark.executor.memoryStatus.count value=%s", executor_infos)
+    except Exception as exc:  # pragma: no cover - Databricks/JVM dependent.
+        LOGGER.info("[PHASE2J_CONF] key=spark.executor.memoryStatus.count value=unavailable:%s", type(exc).__name__)
+    _log_databricks_job_context()
+
+
+def _log_databricks_job_context() -> None:
+    dbutils_obj = globals().get("dbutils")
+    if dbutils_obj is None:
+        LOGGER.info("[PHASE2J_CONF] key=databricks.job.context value=unavailable:no_dbutils")
+        return
+    try:
+        context = dbutils_obj.notebook.entry_point.getDbutils().notebook().getContext()
+        tags = context.tags()
+        for key in ("jobId", "jobRunId", "taskKey", "taskRunId", "clusterId"):
+            value = tags.get(key).getOrElse("unavailable")
+            LOGGER.info("[PHASE2J_CONF] key=databricks.%s value=%s", key, value)
+    except Exception as exc:  # pragma: no cover - Databricks runtime dependent.
+        LOGGER.info("[PHASE2J_CONF] key=databricks.job.context value=unavailable:%s", type(exc).__name__)
+
+
+def _partition_count(frame: DataFrame) -> int | str:
+    try:
+        return frame.rdd.getNumPartitions()
+    except Exception as exc:  # pragma: no cover - Spark execution dependent.
+        return f"unavailable:{type(exc).__name__}"
+
+
+def _log_df_metrics(
+    name: str,
+    frame: DataFrame,
+    *,
+    rows: int | None = None,
+    include_count: bool = False,
+    normal_sample_id: bool = False,
+    exchange: bool = False,
+    symbol: bool = False,
+) -> int | None:
+    observed_rows = rows
+    if observed_rows is None and include_count:
+        observed_rows = frame.count()
+    LOGGER.info(
+        "[PHASE2J_DF] name=%s rows=%s partitions=%s schema=%s",
+        name,
+        observed_rows if observed_rows is not None else "not_counted",
+        _partition_count(frame),
+        ",".join(frame.columns),
+    )
+    if normal_sample_id and "normal_sample_id" in frame.columns:
+        LOGGER.info(
+            "[PHASE2J_DF] name=%s distinct_normal_sample_id=%s",
+            name,
+            frame.select("normal_sample_id").distinct().count(),
+        )
+    if exchange and "exchange" in frame.columns:
+        coverage = [row["exchange"] for row in frame.select(F.lower(F.col("exchange")).alias("exchange")).distinct().collect()]
+        LOGGER.info("[PHASE2J_DF] name=%s exchanges=%s", name, ",".join(sorted(coverage)))
+    if symbol and "symbol" in frame.columns:
+        symbols = [row["symbol"] for row in frame.select("symbol").distinct().collect()]
+        LOGGER.info("[PHASE2J_DF] name=%s symbols=%s", name, ",".join(sorted(str(symbol) for symbol in symbols)))
+    return observed_rows
 
 
 def _read_partitions(
@@ -809,18 +1021,12 @@ def _activity_ranked_anchor_candidates(
 
 
 def _select_quality_passed_candidates(
-    phase2e: ModuleType,
     trade_day: DataFrame,
     bbo_day: DataFrame,
     expected_exchanges: tuple[str, ...],
-    selected_date: str,
-    run_id: str,
-    created_at: datetime,
     activity_ranked_candidates: tuple[QualityPassedNormalCandidate, ...],
-    candidate_starts: tuple[datetime, ...],
     *,
     lookback_seconds: int,
-    excluded_candidate_count: int,
     selected_normal_count: int,
     min_anchor_spacing_seconds: int,
     max_quality_candidates: int,
@@ -835,6 +1041,15 @@ def _select_quality_passed_candidates(
         else activity_ranked_candidates
     )
     LOGGER.info("Phase 2J quality probes candidate limit: %s", len(candidates))
+
+    quality_metrics = _batch_quality_metrics(
+        trade_day,
+        bbo_day,
+        expected_exchanges,
+        candidates,
+        lookback_seconds=lookback_seconds,
+    )
+    LOGGER.info("Phase 2J batch quality metric rows: %s", len(quality_metrics))
 
     for attempt, candidate in enumerate(candidates, start=1):
         anchor_ts = candidate.normal_anchor_ts
@@ -852,89 +1067,38 @@ def _select_quality_passed_candidates(
             )
             continue
         probe_count += 1
-        window = normal_window_for_anchor(anchor_ts, lookback_seconds)
-        metadata = build_normal_selection_metadata(
-            selected_date=selected_date,
-            window=window,
-            lookback_seconds=lookback_seconds,
-            selection_reason="phase2j_quality_probe",
-            excluded_candidate_count=excluded_candidate_count,
-            candidate_start_timestamps=candidate_starts,
-        )
+        metrics = quality_metrics.get(_timestamp_key(anchor_ts))
+        if metrics is None:
+            failure_counts["missing_quality_metrics"] += 1
+            continue
         LOGGER.info(
             "Phase 2J quality probe attempt=%s anchor=%s activity_distance=%s "
-            "nearest_candidate_distance_seconds=%s",
+            "nearest_candidate_distance_seconds=%s trade_count=%s bbo_count=%s "
+            "trade_exchange_count=%s bbo_exchange_count=%s snapshot_row_count=%s",
             attempt,
             anchor_ts,
             candidate.activity_distance,
             candidate.nearest_candidate_distance_seconds,
+            metrics["trade_count"],
+            metrics["bbo_count"],
+            metrics["trade_exchange_count"],
+            metrics["bbo_exchange_count"],
+            metrics["snapshot_row_count"],
         )
-        normal_trade = phase2e._extract_normal_trade_window(
-            trade_day,
-            run_id,
-            metadata,
-            created_at,
-        ).cache()
-        normal_bbo = phase2e._extract_normal_bbo_window(
-            bbo_day,
-            run_id,
-            metadata,
-            created_at,
-        ).cache()
-        trade_count = normal_trade.count()
-        bbo_count = normal_bbo.count()
-        if trade_count == 0:
-            failure_counts["trade_count_zero"] += 1
-            normal_trade.unpersist()
-            normal_bbo.unpersist()
-            continue
-        if bbo_count == 0:
-            failure_counts["bbo_count_zero"] += 1
-            normal_trade.unpersist()
-            normal_bbo.unpersist()
-            continue
-        if not phase2e._has_expected_exchange_counts(normal_trade, expected_exchanges, minimum_count=1):
-            failure_counts["trade_exchange_coverage"] += 1
-            normal_trade.unpersist()
-            normal_bbo.unpersist()
-            continue
-        if not phase2e._has_expected_exchange_counts(normal_bbo, expected_exchanges, minimum_count=1):
-            failure_counts["bbo_exchange_coverage"] += 1
-            normal_trade.unpersist()
-            normal_bbo.unpersist()
-            continue
-
-        normal_snapshot = phase2e._build_normal_snapshot(
-            normal_trade,
-            normal_bbo,
-            expected_exchanges,
-            run_id,
-            metadata,
-            created_at,
-        ).cache()
-        snapshot_count = normal_snapshot.count()
-        if snapshot_count != len(expected_exchanges) * lookback_seconds:
-            failure_counts["snapshot_row_count"] += 1
-            normal_snapshot.unpersist()
-            normal_trade.unpersist()
-            normal_bbo.unpersist()
-            continue
-        if not phase2e._has_expected_exchange_counts(
-            normal_snapshot,
-            expected_exchanges,
-            minimum_count=lookback_seconds,
-        ):
-            failure_counts["snapshot_exchange_coverage"] += 1
-            normal_snapshot.unpersist()
-            normal_trade.unpersist()
-            normal_bbo.unpersist()
+        failure_reason = _quality_failure_reason(
+            metrics,
+            expected_exchange_count=len(expected_exchanges),
+            expected_snapshot_rows=len(expected_exchanges) * lookback_seconds,
+        )
+        if failure_reason is not None:
+            failure_counts[failure_reason] += 1
             continue
 
         quality_candidates.append(
             QualityPassedNormalCandidate(
                 normal_anchor_ts=anchor_ts,
                 activity_distance=candidate.activity_distance,
-                nearest_candidate_distance_seconds=metadata.nearest_candidate_distance_seconds,
+                nearest_candidate_distance_seconds=candidate.nearest_candidate_distance_seconds,
             )
         )
         LOGGER.info(
@@ -943,11 +1107,8 @@ def _select_quality_passed_candidates(
             attempt,
             anchor_ts,
             candidate.activity_distance,
-            metadata.nearest_candidate_distance_seconds,
+            candidate.nearest_candidate_distance_seconds,
         )
-        normal_snapshot.unpersist()
-        normal_trade.unpersist()
-        normal_bbo.unpersist()
         selected = select_activity_matched_candidates(
             quality_candidates,
             selected_count=selected_normal_count,
@@ -969,6 +1130,145 @@ def _select_quality_passed_candidates(
     )
 
 
+def _batch_quality_metrics(
+    trade_day: DataFrame,
+    bbo_day: DataFrame,
+    expected_exchanges: tuple[str, ...],
+    candidates: tuple[QualityPassedNormalCandidate, ...],
+    *,
+    lookback_seconds: int,
+) -> dict[str, dict[str, int]]:
+    if not candidates:
+        return {}
+    spark = trade_day.sparkSession
+    candidate_frame = _candidate_windows_frame(spark, candidates, lookback_seconds=lookback_seconds).cache()
+    _log_df_metrics("quality_candidate_windows", candidate_frame, include_count=True)
+    expected_exchange_values = [exchange.lower() for exchange in expected_exchanges]
+
+    trade_ts_expr = timestamp_expression(trade_day, "ts_event")
+    if trade_ts_expr is None:
+        raise RuntimeError("Unable to convert trade ts_event to timestamp.")
+    trade_base = (
+        trade_day.withColumn("ts_event_ts", trade_ts_expr)
+        .select(
+            F.lower(F.col("exchange")).alias("exchange"),
+            "symbol",
+            "ts_event_ts",
+        )
+        .where(F.col("exchange").isin(expected_exchange_values))
+        .where(F.col("ts_event_ts").isNotNull())
+    )
+    trade_windowed = trade_base.join(
+        F.broadcast(candidate_frame),
+        (F.col("ts_event_ts") >= F.col("normal_window_start_ts"))
+        & (F.col("ts_event_ts") < F.col("normal_anchor_ts")),
+        "inner",
+    )
+    trade_counts = trade_windowed.groupBy("normal_anchor_ts").agg(
+        F.count("*").alias("trade_count"),
+        F.countDistinct("exchange").alias("trade_exchange_count"),
+        F.countDistinct("exchange", "symbol").alias("trade_exchange_symbol_count"),
+    )
+
+    bbo_ts_expr = timestamp_expression(bbo_day, "ts_event")
+    if bbo_ts_expr is None:
+        raise RuntimeError("Unable to convert BBO ts_event to timestamp.")
+    bbo_base = (
+        bbo_day.withColumn("ts_event_ts", bbo_ts_expr)
+        .select(
+            F.lower(F.col("exchange")).alias("exchange"),
+            "symbol",
+            "ts_event_ts",
+        )
+        .where(F.col("exchange").isin(expected_exchange_values))
+        .where(F.col("ts_event_ts").isNotNull())
+    )
+    bbo_windowed = bbo_base.join(
+        F.broadcast(candidate_frame),
+        (F.col("ts_event_ts") >= F.col("normal_window_start_ts"))
+        & (F.col("ts_event_ts") < F.col("normal_anchor_ts")),
+        "inner",
+    )
+    bbo_counts = bbo_windowed.groupBy("normal_anchor_ts").agg(
+        F.count("*").alias("bbo_count"),
+        F.countDistinct("exchange").alias("bbo_exchange_count"),
+        F.countDistinct("exchange", "symbol").alias("bbo_exchange_symbol_count"),
+    )
+    exchange_symbols = (
+        trade_windowed.select("normal_anchor_ts", "exchange", "symbol")
+        .unionByName(bbo_windowed.select("normal_anchor_ts", "exchange", "symbol"))
+        .distinct()
+        .groupBy("normal_anchor_ts")
+        .agg(
+            F.count("*").alias("snapshot_exchange_symbol_count"),
+            F.countDistinct("exchange").alias("snapshot_exchange_count"),
+        )
+    )
+    rows = (
+        candidate_frame.select("normal_anchor_ts")
+        .join(trade_counts, "normal_anchor_ts", "left")
+        .join(bbo_counts, "normal_anchor_ts", "left")
+        .join(exchange_symbols, "normal_anchor_ts", "left")
+        .fillna(
+            0,
+            subset=[
+                "trade_count",
+                "trade_exchange_count",
+                "trade_exchange_symbol_count",
+                "bbo_count",
+                "bbo_exchange_count",
+                "bbo_exchange_symbol_count",
+                "snapshot_exchange_symbol_count",
+                "snapshot_exchange_count",
+            ],
+        )
+        .withColumn("snapshot_row_count", F.col("snapshot_exchange_symbol_count") * F.lit(lookback_seconds))
+        .collect()
+    )
+    candidate_frame.unpersist()
+    metrics: dict[str, dict[str, int]] = {}
+    for row in rows:
+        metrics[_timestamp_key(row["normal_anchor_ts"])] = {
+            "trade_count": int(row["trade_count"]),
+            "trade_exchange_count": int(row["trade_exchange_count"]),
+            "trade_exchange_symbol_count": int(row["trade_exchange_symbol_count"]),
+            "bbo_count": int(row["bbo_count"]),
+            "bbo_exchange_count": int(row["bbo_exchange_count"]),
+            "bbo_exchange_symbol_count": int(row["bbo_exchange_symbol_count"]),
+            "snapshot_exchange_symbol_count": int(row["snapshot_exchange_symbol_count"]),
+            "snapshot_exchange_count": int(row["snapshot_exchange_count"]),
+            "snapshot_row_count": int(row["snapshot_row_count"]),
+        }
+    return metrics
+
+
+def _quality_failure_reason(
+    metrics: dict[str, int],
+    *,
+    expected_exchange_count: int,
+    expected_snapshot_rows: int,
+) -> str | None:
+    if metrics["trade_count"] == 0:
+        return "trade_count_zero"
+    if metrics["bbo_count"] == 0:
+        return "bbo_count_zero"
+    if metrics["trade_exchange_count"] < expected_exchange_count:
+        return "trade_exchange_coverage"
+    if metrics["bbo_exchange_count"] < expected_exchange_count:
+        return "bbo_exchange_coverage"
+    if metrics["snapshot_row_count"] != expected_snapshot_rows:
+        return "snapshot_row_count"
+    if metrics["snapshot_exchange_count"] < expected_exchange_count:
+        return "snapshot_exchange_coverage"
+    return None
+
+
+def _timestamp_key(value: datetime) -> str:
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.isoformat()
+
+
 def _build_selected_outputs(
     phase2e: ModuleType,
     trade_day: DataFrame,
@@ -985,79 +1285,874 @@ def _build_selected_outputs(
     selected_normal_count: int,
     min_anchor_spacing_seconds: int,
 ) -> tuple[DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame]:
-    trade_frames: list[DataFrame] = []
-    bbo_frames: list[DataFrame] = []
-    snapshot_frames: list[DataFrame] = []
-    exchange_frames: list[DataFrame] = []
-    cross_frames: list[DataFrame] = []
-    bucket_frames: list[DataFrame] = []
+    del candidate_starts
+    spark = trade_day.sparkSession
+    selected_normals_df = _selected_normals_frame(
+        spark,
+        selected,
+        selected_date=selected_date,
+        lookback_seconds=lookback_seconds,
+        selection_reason="activity_matched_multi_normal",
+        excluded_candidate_count=excluded_candidate_count,
+        selected_normal_count=selected_normal_count,
+        min_anchor_spacing_seconds=min_anchor_spacing_seconds,
+    ).cache()
+    _log_df_metrics("selected_normals_df", selected_normals_df, include_count=True, normal_sample_id=True)
 
-    for candidate in selected:
-        window = normal_window_for_anchor(candidate.normal_anchor_ts, lookback_seconds)
-        base_metadata = build_normal_selection_metadata(
-            selected_date=selected_date,
-            window=window,
-            lookback_seconds=lookback_seconds,
-            selection_reason="activity_matched_multi_normal",
-            excluded_candidate_count=excluded_candidate_count,
-            candidate_start_timestamps=candidate_starts,
-        )
-        metadata = Phase2JNormalMetadata(
-            sample_type=SAMPLE_TYPE_NORMAL,
-            selected_date=base_metadata.selected_date,
-            normal_window_start_ts=base_metadata.normal_window_start_ts,
-            normal_window_end_ts=base_metadata.normal_window_end_ts,
-            normal_anchor_ts=base_metadata.normal_anchor_ts,
-            lookback_seconds=base_metadata.lookback_seconds,
-            selection_reason=base_metadata.selection_reason,
-            excluded_candidate_count=base_metadata.excluded_candidate_count,
-            nearest_candidate_distance_seconds=base_metadata.nearest_candidate_distance_seconds,
-            normal_sample_id=candidate.normal_sample_id,
-            normal_sample_rank=candidate.normal_sample_rank,
-            activity_distance=candidate.activity_distance,
-            selected_normal_count=selected_normal_count,
-            min_anchor_spacing_seconds=min_anchor_spacing_seconds,
-        )
-        normal_trade = _with_phase2j_metadata(
-            phase2e._extract_normal_trade_window(trade_day, run_id, metadata, created_at),
-            metadata,
-        ).cache()
-        normal_bbo = _with_phase2j_metadata(
-            phase2e._extract_normal_bbo_window(bbo_day, run_id, metadata, created_at),
-            metadata,
-        ).cache()
-        normal_snapshot = _with_phase2j_metadata(
-            phase2e._build_normal_snapshot(
-                normal_trade,
-                normal_bbo,
-                expected_exchanges,
-                run_id,
-                metadata,
-                created_at,
-            ),
-            metadata,
-        ).cache()
-        exchange_profile, cross_exchange_mid_diff, bucket_change_profile = phase2e._build_normal_profiles(
+    with _phase2j_timer("normal_trade_output_build"):
+        normal_trade = _extract_multi_normal_trade_window(
+            trade_day,
+            selected_normals_df,
+            run_id,
+            created_at,
+        ).repartition("normal_sample_id", "exchange", "symbol").cache()
+    with _phase2j_timer("normal_bbo_output_build"):
+        normal_bbo = _extract_multi_normal_bbo_window(
+            bbo_day,
+            selected_normals_df,
+            run_id,
+            created_at,
+        ).repartition("normal_sample_id", "exchange", "symbol").cache()
+    with _phase2j_timer("snapshot_build"):
+        normal_snapshot = _build_multi_normal_snapshot(
+            phase2e,
+            normal_trade,
+            normal_bbo,
+            selected_normals_df,
+            expected_exchanges,
+            run_id,
+            created_at,
+        ).repartition("normal_sample_id", "exchange", "symbol").cache()
+    with _phase2j_timer("profile_build"):
+        normal_exchange, normal_cross, normal_bucket = _build_multi_normal_profiles(
+            phase2e,
             normal_snapshot,
             expected_exchanges,
             run_id,
-            metadata,
             created_at,
         )
-        trade_frames.append(normal_trade)
-        bbo_frames.append(normal_bbo)
-        snapshot_frames.append(normal_snapshot)
-        exchange_frames.append(_with_phase2j_metadata(exchange_profile, metadata).cache())
-        cross_frames.append(_with_phase2j_metadata(cross_exchange_mid_diff, metadata).cache())
-        bucket_frames.append(_with_phase2j_metadata(bucket_change_profile, metadata).cache())
-
+        normal_exchange = normal_exchange.repartition("normal_sample_id", "exchange", "symbol").cache()
+        normal_cross = normal_cross.repartition("normal_sample_id", "symbol_key").cache()
+        normal_bucket = normal_bucket.repartition("normal_sample_id", "exchange", "symbol").cache()
+    selected_normals_df.unpersist()
     return (
-        _union_all(trade_frames).cache(),
-        _union_all(bbo_frames).cache(),
-        _union_all(snapshot_frames).cache(),
-        _union_all(exchange_frames).cache(),
-        _union_all(cross_frames).cache(),
-        _union_all(bucket_frames).cache(),
+        normal_trade,
+        normal_bbo,
+        normal_snapshot,
+        normal_exchange,
+        normal_cross,
+        normal_bucket,
+    )
+
+
+def _candidate_windows_frame(
+    spark: Any,
+    candidates: tuple[QualityPassedNormalCandidate, ...],
+    *,
+    lookback_seconds: int,
+) -> DataFrame:
+    rows = [
+        (
+            index,
+            candidate.normal_anchor_ts,
+            candidate.normal_anchor_ts - timedelta(seconds=lookback_seconds),
+            candidate.activity_distance,
+            candidate.nearest_candidate_distance_seconds,
+        )
+        for index, candidate in enumerate(candidates, start=1)
+    ]
+    return spark.createDataFrame(
+        rows,
+        (
+            "candidate_index",
+            "normal_anchor_ts",
+            "normal_window_start_ts",
+            "activity_distance",
+            "nearest_candidate_distance_seconds",
+        ),
+    ).select(
+        "candidate_index",
+        F.col("normal_anchor_ts").cast("timestamp").alias("normal_anchor_ts"),
+        F.col("normal_window_start_ts").cast("timestamp").alias("normal_window_start_ts"),
+        "activity_distance",
+        "nearest_candidate_distance_seconds",
+    )
+
+
+def _selected_normals_frame(
+    spark: Any,
+    selected: tuple[Any, ...],
+    *,
+    selected_date: str,
+    lookback_seconds: int,
+    selection_reason: str,
+    excluded_candidate_count: int,
+    selected_normal_count: int,
+    min_anchor_spacing_seconds: int,
+) -> DataFrame:
+    rows = []
+    for candidate in selected:
+        anchor = candidate.normal_anchor_ts
+        if anchor.tzinfo is not None:
+            anchor = anchor.astimezone(timezone.utc).replace(tzinfo=None)
+        rows.append(
+            (
+                SAMPLE_TYPE_NORMAL,
+                selected_date,
+                anchor - timedelta(seconds=lookback_seconds),
+                anchor,
+                anchor,
+                lookback_seconds,
+                selection_reason,
+                excluded_candidate_count,
+                candidate.nearest_candidate_distance_seconds,
+                candidate.normal_sample_id,
+                candidate.normal_sample_rank,
+                candidate.activity_distance,
+                selected_normal_count,
+                min_anchor_spacing_seconds,
+            )
+        )
+    return spark.createDataFrame(
+        rows,
+        (
+            "sample_type",
+            "selected_date",
+            "normal_window_start_ts",
+            "normal_window_end_ts",
+            "normal_anchor_ts",
+            "lookback_seconds",
+            "selection_reason",
+            "excluded_candidate_count",
+            "nearest_candidate_distance_seconds",
+            "normal_sample_id",
+            "normal_sample_rank",
+            "activity_distance",
+            "selected_normal_count",
+            "min_anchor_spacing_seconds",
+        ),
+    )
+
+
+def _metadata_columns_from_normal_alias(alias: str, created_at: datetime) -> tuple[Any, ...]:
+    return (
+        F.col(f"{alias}.sample_type").alias("sample_type"),
+        F.col(f"{alias}.selected_date").alias("selected_date"),
+        F.col(f"{alias}.normal_window_start_ts").cast("timestamp").alias("normal_window_start_ts"),
+        F.col(f"{alias}.normal_window_end_ts").cast("timestamp").alias("normal_window_end_ts"),
+        F.col(f"{alias}.normal_anchor_ts").cast("timestamp").alias("normal_anchor_ts"),
+        F.col(f"{alias}.lookback_seconds").alias("lookback_seconds"),
+        F.col(f"{alias}.selection_reason").alias("selection_reason"),
+        F.col(f"{alias}.excluded_candidate_count").alias("excluded_candidate_count"),
+        F.col(f"{alias}.nearest_candidate_distance_seconds").alias("nearest_candidate_distance_seconds"),
+        F.lit(created_at).cast("timestamp").alias("created_at"),
+    )
+
+
+def _phase2j_columns_from_normal_alias(alias: str) -> tuple[Any, ...]:
+    return (
+        F.col(f"{alias}.normal_sample_id").alias("normal_sample_id"),
+        F.col(f"{alias}.normal_sample_rank").alias("normal_sample_rank"),
+        F.col(f"{alias}.activity_distance").cast("double").alias("activity_distance"),
+        F.col(f"{alias}.selected_normal_count").alias("selected_normal_count"),
+        F.col(f"{alias}.min_anchor_spacing_seconds").alias("min_anchor_spacing_seconds"),
+    )
+
+
+def _extract_multi_normal_trade_window(
+    trade_day: DataFrame,
+    selected_normals: DataFrame,
+    run_id: str,
+    created_at: datetime,
+) -> DataFrame:
+    ts_event_expr = timestamp_expression(trade_day, "ts_event")
+    ts_recv_expr = timestamp_expression(trade_day, "ts_recv")
+    if ts_event_expr is None or ts_recv_expr is None:
+        raise RuntimeError("Unable to convert trade ts_event or ts_recv to timestamp.")
+    enriched = (
+        trade_day.withColumn("ts_event_ts", ts_event_expr)
+        .withColumn("ts_recv_ts", ts_recv_expr)
+        .alias("trade")
+        .join(
+            F.broadcast(selected_normals.alias("normal")),
+            (F.col("trade.ts_event_ts") >= F.col("normal.normal_window_start_ts"))
+            & (F.col("trade.ts_event_ts") < F.col("normal.normal_window_end_ts")),
+            "inner",
+        )
+        .withColumn(
+            "second_before_anchor",
+            (
+                F.col("normal.normal_anchor_ts").cast("timestamp").cast("double")
+                - F.col("trade.ts_event_ts").cast("double")
+            ),
+        )
+    )
+    return enriched.select(
+        F.lit(run_id).alias("run_id"),
+        *_metadata_columns_from_normal_alias("normal", created_at),
+        F.lower(F.col("trade.exchange")).alias("exchange"),
+        F.col("trade.symbol"),
+        F.lit("trade").alias("source_stream"),
+        F.col("trade.ts_event"),
+        F.col("trade.ts_event_ts"),
+        F.col("trade.ts_recv"),
+        F.col("trade.ts_recv_ts"),
+        _column_or_null_from_alias(trade_day, "trade", "seq").alias("seq"),
+        F.col("trade.price"),
+        F.col("trade.qty"),
+        _column_or_null_from_alias(trade_day, "trade", "side").alias("side"),
+        _column_or_null_from_alias(trade_day, "trade", "trade_id").alias("trade_id"),
+        F.col("second_before_anchor"),
+        *_phase2j_columns_from_normal_alias("normal"),
+    )
+
+
+def _extract_multi_normal_bbo_window(
+    bbo_day: DataFrame,
+    selected_normals: DataFrame,
+    run_id: str,
+    created_at: datetime,
+) -> DataFrame:
+    ts_event_expr = timestamp_expression(bbo_day, "ts_event")
+    ts_recv_expr = timestamp_expression(bbo_day, "ts_recv")
+    if ts_event_expr is None or ts_recv_expr is None:
+        raise RuntimeError("Unable to convert BBO ts_event or ts_recv to timestamp.")
+    enriched = (
+        bbo_day.withColumn("ts_event_ts", ts_event_expr)
+        .withColumn("ts_recv_ts", ts_recv_expr)
+        .alias("bbo")
+        .join(
+            F.broadcast(selected_normals.alias("normal")),
+            (F.col("bbo.ts_event_ts") >= F.col("normal.normal_window_start_ts"))
+            & (F.col("bbo.ts_event_ts") < F.col("normal.normal_window_end_ts")),
+            "inner",
+        )
+        .withColumn(
+            "second_before_anchor",
+            (
+                F.col("normal.normal_anchor_ts").cast("timestamp").cast("double")
+                - F.col("bbo.ts_event_ts").cast("double")
+            ),
+        )
+        .withColumn("bid_price_num", F.col("bbo.bid_price").cast("double"))
+        .withColumn("bid_qty_num", F.col("bbo.bid_qty").cast("double"))
+        .withColumn("ask_price_num", F.col("bbo.ask_price").cast("double"))
+        .withColumn("ask_qty_num", F.col("bbo.ask_qty").cast("double"))
+        .withColumn("mid_price", (F.col("bid_price_num") + F.col("ask_price_num")) / F.lit(2.0))
+        .withColumn("spread", F.col("ask_price_num") - F.col("bid_price_num"))
+        .withColumn(
+            "spread_bps",
+            F.when(F.col("mid_price") != 0, F.col("spread") / F.col("mid_price") * F.lit(10000.0)),
+        )
+        .withColumn("book_qty_sum", F.col("bid_qty_num") + F.col("ask_qty_num"))
+        .withColumn(
+            "book_imbalance",
+            F.when(
+                F.col("book_qty_sum") != 0,
+                (F.col("bid_qty_num") - F.col("ask_qty_num")) / F.col("book_qty_sum"),
+            ),
+        )
+    )
+    return enriched.select(
+        F.lit(run_id).alias("run_id"),
+        *_metadata_columns_from_normal_alias("normal", created_at),
+        F.lower(F.col("bbo.exchange")).alias("exchange"),
+        F.col("bbo.symbol"),
+        F.lit("bbo").alias("source_stream"),
+        F.col("bbo.ts_event"),
+        F.col("bbo.ts_event_ts"),
+        F.col("bbo.ts_recv"),
+        F.col("bbo.ts_recv_ts"),
+        _column_or_null_from_alias(bbo_day, "bbo", "seq").alias("seq"),
+        F.col("bbo.bid_price"),
+        F.col("bbo.bid_qty"),
+        F.col("bbo.ask_price"),
+        F.col("bbo.ask_qty"),
+        F.col("mid_price"),
+        F.col("spread"),
+        F.col("spread_bps"),
+        F.col("book_imbalance"),
+        F.col("second_before_anchor"),
+        *_phase2j_columns_from_normal_alias("normal"),
+    )
+
+
+def _column_or_null_from_alias(frame: DataFrame, alias: str, column: str) -> Any:
+    if column in frame.columns:
+        return F.col(f"{alias}.{column}")
+    return F.lit(None)
+
+
+def _build_multi_normal_snapshot(
+    phase2e: ModuleType,
+    normal_trade: DataFrame,
+    normal_bbo: DataFrame,
+    selected_normals: DataFrame,
+    expected_exchanges: tuple[str, ...],
+    run_id: str,
+    created_at: datetime,
+) -> DataFrame:
+    exchange_symbols = (
+        normal_trade.select("normal_sample_id", "exchange", "symbol")
+        .unionByName(normal_bbo.select("normal_sample_id", "exchange", "symbol"))
+        .where(F.col("exchange").isin([exchange.lower() for exchange in expected_exchanges]))
+        .distinct()
+    )
+    metadata = selected_normals.select(
+        "sample_type",
+        "selected_date",
+        "normal_window_start_ts",
+        "normal_window_end_ts",
+        "normal_anchor_ts",
+        "lookback_seconds",
+        "selection_reason",
+        "excluded_candidate_count",
+        "nearest_candidate_distance_seconds",
+        *PHASE2J_EXTRA_METADATA_COLUMNS,
+    )
+    second_grid = (
+        exchange_symbols.join(metadata, "normal_sample_id", "inner")
+        .withColumn(
+            "ts_second",
+            F.explode(
+                F.sequence(
+                    F.col("normal_window_start_ts").cast("timestamp"),
+                    F.expr("normal_window_end_ts - interval 1 second"),
+                    F.expr("interval 1 second"),
+                )
+            ),
+        )
+        .withColumn(
+            "second_before_anchor",
+            (F.col("normal_anchor_ts").cast("long") - F.col("ts_second").cast("long")).cast("int"),
+        )
+    )
+    trade_snapshots = _build_multi_trade_snapshots(phase2e, normal_trade)
+    bbo_snapshots = _build_multi_bbo_snapshots(phase2e, normal_bbo)
+    output = (
+        second_grid.join(
+            trade_snapshots,
+            ["normal_sample_id", "exchange", "symbol", "ts_second"],
+            "left",
+        )
+        .join(
+            bbo_snapshots,
+            ["normal_sample_id", "exchange", "symbol", "ts_second"],
+            "left",
+        )
+        .transform(phase2e._coalesce_empty_trade_seconds)
+        .transform(_coalesce_empty_multi_bbo_seconds)
+    )
+    return output.select(
+        F.lit(run_id).alias("run_id"),
+        "sample_type",
+        "selected_date",
+        "normal_window_start_ts",
+        "normal_window_end_ts",
+        "normal_anchor_ts",
+        "lookback_seconds",
+        "selection_reason",
+        "excluded_candidate_count",
+        "nearest_candidate_distance_seconds",
+        F.lit(created_at).cast("timestamp").alias("created_at"),
+        "exchange",
+        "symbol",
+        "second_before_anchor",
+        "ts_second",
+        *[F.col(column) for column in phase2e.TRADE_ZERO_COLUMNS],
+        "last_trade_price",
+        "min_trade_price",
+        "max_trade_price",
+        "bbo_update_count",
+        "has_bbo_update",
+        "is_bbo_forward_filled",
+        "last_bbo_update_ts",
+        "bbo_quote_age_seconds",
+        *[F.col(column) for column in phase2e.BBO_LAST_COLUMNS],
+        "avg_spread_bps",
+        "max_spread_bps",
+        "avg_book_imbalance",
+        *PHASE2J_EXTRA_METADATA_COLUMNS,
+    )
+
+
+def _build_multi_trade_snapshots(phase2e: ModuleType, normal_trade: DataFrame) -> DataFrame:
+    selected = (
+        normal_trade.select(
+            "normal_sample_id",
+            "exchange",
+            "symbol",
+            F.date_trunc("second", F.col("ts_event_ts")).alias("ts_second"),
+            "ts_event_ts",
+            "seq",
+            "trade_id",
+            F.col("price").cast("double").alias("price"),
+            F.col("qty").cast("double").alias("qty"),
+            F.lower(F.trim(F.col("side"))).alias("side_norm"),
+        )
+        .where(F.col("ts_second").isNotNull())
+        .where(F.col("price").isNotNull())
+        .where(F.col("qty").isNotNull())
+    )
+    ranked = selected.withColumn(
+        "last_rank",
+        F.row_number().over(
+            Window.partitionBy("normal_sample_id", "exchange", "symbol", "ts_second").orderBy(
+                F.col("ts_event_ts").desc(),
+                F.col("seq").desc_nulls_last(),
+                F.col("trade_id").desc_nulls_last(),
+            )
+        ),
+    ).withColumn("notional", F.col("price") * F.col("qty"))
+    buy = F.col("side_norm").isin("buy", "b")
+    sell = F.col("side_norm").isin("sell", "s")
+    return (
+        ranked.groupBy("normal_sample_id", "exchange", "symbol", "ts_second")
+        .agg(
+            F.count("*").alias("trade_count"),
+            F.sum("qty").alias("trade_volume"),
+            F.sum("notional").alias("trade_notional"),
+            F.sum(F.when(buy, 1).otherwise(0)).alias("buy_trade_count"),
+            F.sum(F.when(sell, 1).otherwise(0)).alias("sell_trade_count"),
+            F.sum(F.when(buy, F.col("qty")).otherwise(0.0)).alias("buy_qty"),
+            F.sum(F.when(sell, F.col("qty")).otherwise(0.0)).alias("sell_qty"),
+            F.sum(F.when(buy, F.col("notional")).otherwise(0.0)).alias("buy_notional"),
+            F.sum(F.when(sell, F.col("notional")).otherwise(0.0)).alias("sell_notional"),
+            F.max(F.when(F.col("last_rank") == 1, F.col("price"))).alias("last_trade_price"),
+            F.min("price").alias("min_trade_price"),
+            F.max("price").alias("max_trade_price"),
+        )
+        .withColumn("trade_imbalance_qty", F.col("buy_qty") - F.col("sell_qty"))
+    )
+
+
+def _build_multi_bbo_snapshots(phase2e: ModuleType, normal_bbo: DataFrame) -> DataFrame:
+    ranked = normal_bbo.withColumn(
+        "ts_second",
+        F.date_trunc("second", F.col("ts_event_ts")),
+    ).withColumn(
+        "last_rank",
+        F.row_number().over(
+            Window.partitionBy("normal_sample_id", "exchange", "symbol", "ts_second").orderBy(
+                F.col("ts_event_ts").desc(),
+                F.col("seq").desc_nulls_last(),
+                F.col("ts_recv_ts").desc_nulls_last(),
+            )
+        ),
+    )
+    per_second = ranked.groupBy("normal_sample_id", "exchange", "symbol", "ts_second").agg(
+        F.count("*").alias("bbo_update_count"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("ts_event_ts"))).alias("last_bbo_update_ts_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("bid_price").cast("double"))).alias("last_bid_price_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("ask_price").cast("double"))).alias("last_ask_price_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("bid_qty").cast("double"))).alias("last_bid_qty_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("ask_qty").cast("double"))).alias("last_ask_qty_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("mid_price"))).alias("last_mid_price_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("spread"))).alias("last_spread_raw"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("spread_bps"))).alias("last_spread_bps_raw"),
+        F.avg("spread_bps").alias("avg_spread_bps"),
+        F.max("spread_bps").alias("max_spread_bps"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("book_imbalance"))).alias("last_book_imbalance_raw"),
+        F.avg("book_imbalance").alias("avg_book_imbalance"),
+    )
+    fill_window = (
+        Window.partitionBy("normal_sample_id", "exchange", "symbol")
+        .orderBy("ts_second")
+        .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+    )
+    return per_second.select(
+        "normal_sample_id",
+        "exchange",
+        "symbol",
+        "ts_second",
+        "bbo_update_count",
+        "avg_spread_bps",
+        "max_spread_bps",
+        "avg_book_imbalance",
+        F.last("last_bbo_update_ts_raw", True).over(fill_window).alias("last_bbo_update_ts"),
+        *[
+            F.last(f"{column}_raw", True).over(fill_window).alias(column)
+            for column in phase2e.BBO_LAST_COLUMNS
+            if column != "last_bbo_update_ts"
+        ],
+    )
+
+
+def _coalesce_empty_multi_bbo_seconds(frame: DataFrame) -> DataFrame:
+    with_count = frame.withColumn(
+        "bbo_update_count",
+        F.coalesce(F.col("bbo_update_count"), F.lit(0)).cast("long"),
+    )
+    fill_window = (
+        Window.partitionBy("normal_sample_id", "exchange", "symbol")
+        .orderBy("ts_second")
+        .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+    )
+    with_filled = with_count
+    for column in ("last_bbo_update_ts", "last_bid_price", "last_ask_price", "last_bid_qty", "last_ask_qty", "last_mid_price", "last_spread", "last_spread_bps", "last_book_imbalance"):
+        with_filled = with_filled.withColumn(column, F.last(column, True).over(fill_window))
+    return (
+        with_filled.withColumn("has_bbo_update", F.col("bbo_update_count") > F.lit(0))
+        .withColumn(
+            "is_bbo_forward_filled",
+            (F.col("bbo_update_count") == F.lit(0)) & F.col("last_bbo_update_ts").isNotNull(),
+        )
+        .withColumn(
+            "bbo_quote_age_seconds",
+            F.when(
+                F.col("last_bbo_update_ts").isNotNull(),
+                F.col("ts_second").cast("long") - F.col("last_bbo_update_ts").cast("long"),
+            ),
+        )
+    )
+
+
+def _build_multi_normal_profiles(
+    phase2e: ModuleType,
+    normal_snapshot: DataFrame,
+    expected_exchanges: tuple[str, ...],
+    run_id: str,
+    created_at: datetime,
+) -> tuple[DataFrame, DataFrame, DataFrame]:
+    spark = normal_snapshot.sparkSession
+    windows = phase2e._profile_windows_frame(spark)
+    profiled = normal_snapshot.withColumn("second_before_event", F.col("second_before_anchor"))
+    exchange_profile = _build_multi_exchange_profile(phase2e, profiled, windows, run_id, created_at)
+    cross_exchange_mid_diff = _build_multi_cross_exchange_mid_diff(
+        phase2e,
+        profiled,
+        windows,
+        expected_exchanges,
+        run_id,
+        created_at,
+    )
+    bucket_change_profile = _build_multi_bucket_change_profile(phase2e, spark, exchange_profile, run_id, created_at)
+    return exchange_profile, cross_exchange_mid_diff, bucket_change_profile
+
+
+def _profile_metadata_group_columns() -> tuple[str, ...]:
+    return (
+        "sample_type",
+        "selected_date",
+        "normal_window_start_ts",
+        "normal_window_end_ts",
+        "normal_anchor_ts",
+        *PHASE2J_METADATA_COLUMNS,
+    )
+
+
+def _profile_audit_select(run_id: str, phase2e: ModuleType, created_at: datetime) -> tuple[Any, ...]:
+    return (
+        F.lit(run_id).alias("run_id"),
+        F.lit(run_id).alias("source_snapshot_run_id"),
+        F.col("sample_type"),
+        F.col("selected_date"),
+        F.lit(None).cast("string").alias("event_id"),
+        F.lit(None).cast("string").alias("event_direction"),
+        F.lit(None).cast("timestamp").alias("event_start_ts"),
+        F.col("normal_window_start_ts"),
+        F.col("normal_window_end_ts"),
+        F.col("normal_anchor_ts"),
+        F.lit(phase2e.PROFILE_VERSION).alias("profile_version"),
+        F.lit(created_at).cast("timestamp").alias("created_at"),
+    )
+
+
+def _build_multi_exchange_profile(
+    phase2e: ModuleType,
+    snapshot: DataFrame,
+    windows: DataFrame,
+    run_id: str,
+    created_at: datetime,
+) -> DataFrame:
+    metadata_columns = _profile_metadata_group_columns()
+    windowed = (
+        snapshot.crossJoin(windows)
+        .where(F.col("second_before_event") >= F.col("window_min_second_before_event"))
+        .where(F.col("second_before_event") <= F.col("window_max_second_before_event"))
+    )
+    partition = Window.partitionBy("normal_sample_id", "exchange", "symbol", "window_mode", "window_label")
+    ranked = (
+        windowed.withColumn(
+            "first_rank",
+            F.row_number().over(partition.orderBy(F.col("second_before_event").desc())),
+        )
+        .withColumn(
+            "last_rank",
+            F.row_number().over(partition.orderBy(F.col("second_before_event").asc())),
+        )
+        .withColumn("imbalance_qty", F.col("buy_qty") - F.col("sell_qty"))
+    )
+    grouped = ranked.groupBy(
+        *metadata_columns,
+        "exchange",
+        "symbol",
+        "window_mode",
+        "window_label",
+        "window_min_second_before_event",
+        "window_max_second_before_event",
+    ).agg(
+        F.count("*").alias("seconds_observed"),
+        F.sum(F.when(F.col("trade_count") > 0, 1).otherwise(0)).alias("seconds_with_trades"),
+        F.sum(F.when(F.col("bbo_update_count") > 0, 1).otherwise(0)).alias("seconds_with_bbo_update"),
+        F.sum(F.when(F.col("is_bbo_forward_filled"), 1).otherwise(0)).alias("seconds_forward_filled_bbo"),
+        F.sum("trade_count").alias("trade_count_sum"),
+        F.avg("trade_count").alias("trade_count_per_second_avg"),
+        F.max("trade_count").alias("trade_count_per_second_max"),
+        F.sum("trade_volume").alias("trade_volume_sum"),
+        F.sum("trade_notional").alias("trade_notional_sum"),
+        F.sum("buy_qty").alias("buy_qty_sum"),
+        F.sum("sell_qty").alias("sell_qty_sum"),
+        F.sum("imbalance_qty").alias("trade_imbalance_qty_sum"),
+        F.avg("imbalance_qty").alias("trade_imbalance_qty_per_second"),
+        F.max(F.when(F.col("first_rank") == 1, F.col("last_trade_price"))).alias("first_last_trade_price"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("last_trade_price"))).alias("last_last_trade_price"),
+        F.min("last_trade_price").alias("min_last_trade_price"),
+        F.max("last_trade_price").alias("max_last_trade_price"),
+        F.max(F.when(F.col("first_rank") == 1, F.col("last_mid_price"))).alias("first_last_mid_price"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("last_mid_price"))).alias("last_last_mid_price"),
+        F.avg("avg_spread_bps").alias("avg_spread_bps_mean"),
+        F.max("avg_spread_bps").alias("avg_spread_bps_max"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("last_spread_bps"))).alias("last_spread_bps_last"),
+        F.avg("avg_book_imbalance").alias("avg_book_imbalance_mean"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("last_book_imbalance"))).alias("last_book_imbalance_last"),
+        F.max("bbo_quote_age_seconds").alias("bbo_quote_age_seconds_max"),
+    )
+    with_ratios = (
+        grouped.withColumn(
+            "trade_imbalance_qty_ratio",
+            F.when(
+                (F.col("buy_qty_sum") + F.col("sell_qty_sum")) != 0,
+                F.col("trade_imbalance_qty_sum") / (F.col("buy_qty_sum") + F.col("sell_qty_sum")),
+            ),
+        )
+        .withColumn(
+            "last_trade_return_bps",
+            F.when(
+                F.col("first_last_trade_price").isNotNull()
+                & (F.col("first_last_trade_price") != 0)
+                & F.col("last_last_trade_price").isNotNull(),
+                (F.col("last_last_trade_price") / F.col("first_last_trade_price") - F.lit(1.0))
+                * F.lit(10000.0),
+            ),
+        )
+        .withColumn(
+            "last_mid_return_bps",
+            F.when(
+                F.col("first_last_mid_price").isNotNull()
+                & (F.col("first_last_mid_price") != 0)
+                & F.col("last_last_mid_price").isNotNull(),
+                (F.col("last_last_mid_price") / F.col("first_last_mid_price") - F.lit(1.0))
+                * F.lit(10000.0),
+            ),
+        )
+    )
+    return with_ratios.select(
+        *_profile_audit_select(run_id, phase2e, created_at),
+        "exchange",
+        "symbol",
+        "window_mode",
+        "window_label",
+        "window_min_second_before_event",
+        "window_max_second_before_event",
+        "seconds_observed",
+        "seconds_with_trades",
+        "seconds_with_bbo_update",
+        "seconds_forward_filled_bbo",
+        "trade_count_sum",
+        "trade_count_per_second_avg",
+        "trade_count_per_second_max",
+        "trade_volume_sum",
+        "trade_notional_sum",
+        "buy_qty_sum",
+        "sell_qty_sum",
+        "trade_imbalance_qty_sum",
+        "trade_imbalance_qty_per_second",
+        "trade_imbalance_qty_ratio",
+        "first_last_trade_price",
+        "last_last_trade_price",
+        "min_last_trade_price",
+        "max_last_trade_price",
+        "last_trade_return_bps",
+        "first_last_mid_price",
+        "last_last_mid_price",
+        "last_mid_return_bps",
+        "avg_spread_bps_mean",
+        "avg_spread_bps_max",
+        "last_spread_bps_last",
+        "avg_book_imbalance_mean",
+        "last_book_imbalance_last",
+        "bbo_quote_age_seconds_max",
+        *PHASE2J_METADATA_COLUMNS,
+    )
+
+
+def _build_multi_cross_exchange_mid_diff(
+    phase2e: ModuleType,
+    snapshot: DataFrame,
+    windows: DataFrame,
+    expected_exchanges: tuple[str, ...],
+    run_id: str,
+    created_at: datetime,
+) -> DataFrame:
+    metadata_columns = _profile_metadata_group_columns()
+    pairs = phase2e._exchange_pairs_frame(snapshot.sparkSession, expected_exchanges)
+    base = snapshot.select(
+        *metadata_columns,
+        F.lower(F.col("symbol")).alias("symbol_key"),
+        F.lower(F.col("exchange")).alias("exchange"),
+        "second_before_event",
+        "ts_second",
+        F.col("last_mid_price").cast("double").alias("last_mid_price"),
+    )
+    joined = (
+        base.alias("a")
+        .join(
+            base.alias("b"),
+            (F.col("a.normal_sample_id") == F.col("b.normal_sample_id"))
+            & (F.col("a.symbol_key") == F.col("b.symbol_key"))
+            & (F.col("a.ts_second") == F.col("b.ts_second")),
+            "inner",
+        )
+        .join(
+            pairs,
+            (F.col("a.exchange") == F.col("exchange_a"))
+            & (F.col("b.exchange") == F.col("exchange_b")),
+            "inner",
+        )
+        .where(F.col("a.last_mid_price").isNotNull())
+        .where(F.col("b.last_mid_price").isNotNull())
+        .select(
+            *[F.col(f"a.{column}").alias(column) for column in metadata_columns],
+            F.col("a.symbol_key").alias("symbol_key"),
+            F.col("a.second_before_event").alias("second_before_event"),
+            F.col("a.ts_second").alias("ts_second"),
+            F.col("exchange_pair"),
+            F.col("exchange_a"),
+            F.col("exchange_b"),
+            F.col("a.last_mid_price").alias("mid_exchange_a"),
+            F.col("b.last_mid_price").alias("mid_exchange_b"),
+        )
+        .withColumn("mid_diff", F.col("mid_exchange_a") - F.col("mid_exchange_b"))
+        .withColumn(
+            "mid_diff_bps",
+            F.when(F.col("mid_exchange_b") != 0, F.col("mid_diff") / F.col("mid_exchange_b") * F.lit(10000.0)),
+        )
+        .withColumn("abs_mid_diff_bps", F.abs(F.col("mid_diff_bps")))
+    )
+    windowed = (
+        joined.crossJoin(windows)
+        .where(F.col("second_before_event") >= F.col("window_min_second_before_event"))
+        .where(F.col("second_before_event") <= F.col("window_max_second_before_event"))
+    )
+    partition = Window.partitionBy("normal_sample_id", "symbol_key", "window_mode", "window_label", "exchange_pair")
+    ranked = windowed.withColumn(
+        "last_rank",
+        F.row_number().over(partition.orderBy(F.col("second_before_event").asc())),
+    )
+    grouped = ranked.groupBy(
+        *metadata_columns,
+        "symbol_key",
+        "window_mode",
+        "window_label",
+        "exchange_pair",
+        "exchange_a",
+        "exchange_b",
+    ).agg(
+        F.count("*").alias("seconds_compared"),
+        F.avg("mid_diff_bps").alias("avg_mid_diff_bps"),
+        F.max("abs_mid_diff_bps").alias("max_abs_mid_diff_bps"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("mid_diff_bps"))).alias("last_mid_diff_bps"),
+        F.max(F.when(F.col("last_rank") == 1, F.col("abs_mid_diff_bps"))).alias("last_abs_mid_diff_bps"),
+    )
+    return grouped.select(
+        *_profile_audit_select(run_id, phase2e, created_at),
+        "symbol_key",
+        "window_mode",
+        "window_label",
+        "exchange_pair",
+        "exchange_a",
+        "exchange_b",
+        "seconds_compared",
+        "avg_mid_diff_bps",
+        "max_abs_mid_diff_bps",
+        "last_mid_diff_bps",
+        "last_abs_mid_diff_bps",
+        *PHASE2J_METADATA_COLUMNS,
+    )
+
+
+def _build_multi_bucket_change_profile(
+    phase2e: ModuleType,
+    spark: Any,
+    exchange_profile: DataFrame,
+    run_id: str,
+    created_at: datetime,
+) -> DataFrame:
+    bucket_pairs = spark.createDataFrame(phase2e.BUCKET_CHANGE_PAIRS, ("from_bucket", "to_bucket"))
+    audit_columns = (*PHASE2J_PROFILE_AUDIT_COLUMNS, *PHASE2J_METADATA_COLUMNS)
+    bucket_metrics = exchange_profile.where(F.col("window_mode") == "bucket").select(
+        *audit_columns,
+        "exchange",
+        "symbol",
+        F.col("window_label").alias("bucket_label"),
+        F.expr(
+            "stack(4, "
+            "'trade_count_per_second', trade_count_per_second_avg, "
+            "'trade_imbalance_qty_per_second', trade_imbalance_qty_per_second, "
+            "'avg_spread_bps', avg_spread_bps_mean, "
+            "'avg_book_imbalance', avg_book_imbalance_mean"
+            ") AS (metric_name, metric_value)"
+        ),
+    )
+    joined = (
+        bucket_pairs.join(
+            bucket_metrics.alias("from_metric"),
+            F.col("from_bucket") == F.col("from_metric.bucket_label"),
+            "inner",
+        )
+        .join(
+            bucket_metrics.alias("to_metric"),
+            (F.col("to_bucket") == F.col("to_metric.bucket_label"))
+            & (F.col("from_metric.normal_sample_id") == F.col("to_metric.normal_sample_id"))
+            & (F.col("from_metric.exchange") == F.col("to_metric.exchange"))
+            & (F.col("from_metric.symbol") == F.col("to_metric.symbol"))
+            & (F.col("from_metric.metric_name") == F.col("to_metric.metric_name")),
+            "inner",
+        )
+        .select(
+            *[F.col(f"from_metric.{column}").alias(column) for column in audit_columns],
+            F.col("from_metric.exchange").alias("exchange"),
+            F.col("from_metric.symbol").alias("symbol"),
+            F.col("from_metric.metric_name").alias("metric_name"),
+            F.col("from_bucket"),
+            F.col("to_bucket"),
+            F.col("from_metric.metric_value").alias("from_bucket_value"),
+            F.col("to_metric.metric_value").alias("to_bucket_value"),
+        )
+        .withColumn("absolute_change", F.col("to_bucket_value") - F.col("from_bucket_value"))
+        .withColumn(
+            "relative_change",
+            F.when(
+                F.col("from_bucket_value").isNotNull()
+                & (F.col("from_bucket_value") != 0)
+                & F.col("to_bucket_value").isNotNull(),
+                F.col("absolute_change") / F.abs(F.col("from_bucket_value")),
+            ),
+        )
+    )
+    return joined.select(
+        *_profile_audit_select(run_id, phase2e, created_at),
+        "exchange",
+        "symbol",
+        "metric_name",
+        "from_bucket",
+        "to_bucket",
+        "from_bucket_value",
+        "to_bucket_value",
+        "absolute_change",
+        "relative_change",
+        *PHASE2J_METADATA_COLUMNS,
     )
 
 
@@ -1489,10 +2584,21 @@ def _write_top_diffs(
     top_n: int,
     created_at: datetime,
     sample_size: int,
+    validation_mode: str,
 ) -> None:
-    top_diffs = _build_top_diffs(comparison, run_id=run_id, top_n=top_n, created_at=created_at).cache()
+    with _phase2j_timer(f"top_diff_build_{label}"):
+        top_diffs = _build_top_diffs(comparison, run_id=run_id, top_n=top_n, created_at=created_at).cache()
+        top_diff_count = _log_df_metrics(label, top_diffs, include_count=True)
     _log_top_diff_group_counts(comparison, top_diffs, label)
-    phase2e._write_and_validate(top_diffs, output_path, label, sample_size)
+    with _phase2j_timer(f"write_validate_{label}"):
+        phase2e._write_and_validate(
+            top_diffs,
+            output_path,
+            label,
+            sample_size,
+            validation_mode=validation_mode,
+            row_count=top_diff_count,
+        )
     top_diffs.unpersist()
 
 
@@ -1617,34 +2723,37 @@ def _validate_selected_output_counts(
     exchange_count: int,
     lookback_seconds: int,
     selected_normal_count: int,
-) -> None:
-    _validate_comparison_count(
+) -> dict[str, int]:
+    counts = {}
+    counts["multi_normal_market_snapshots"] = _validate_comparison_count(
         normal_snapshot,
         "multi_normal_market_snapshots",
         exchange_count * lookback_seconds * selected_normal_count,
     )
-    _validate_comparison_count(
+    counts["multi_normal_profile_reports.exchange_profile"] = _validate_comparison_count(
         normal_exchange,
         "multi_normal_profile_reports.exchange_profile",
         expected_multi_normal_profile_rows(30, selected_normal_count),
     )
-    _validate_comparison_count(
+    counts["multi_normal_profile_reports.cross_exchange_mid_diff"] = _validate_comparison_count(
         normal_cross,
         "multi_normal_profile_reports.cross_exchange_mid_diff",
         expected_multi_normal_profile_rows(30, selected_normal_count),
     )
-    _validate_comparison_count(
+    counts["multi_normal_profile_reports.bucket_change_profile"] = _validate_comparison_count(
         normal_bucket,
         "multi_normal_profile_reports.bucket_change_profile",
         expected_multi_normal_profile_rows(48, selected_normal_count),
     )
+    return counts
 
 
-def _validate_comparison_count(frame: DataFrame, label: str, expected_count: int) -> None:
+def _validate_comparison_count(frame: DataFrame, label: str, expected_count: int) -> int:
     observed_count = frame.count()
     LOGGER.info("%s expected vs observed rows: expected=%s observed=%s", label, expected_count, observed_count)
     if observed_count != expected_count:
         raise RuntimeError(f"{label} row count mismatch: expected={expected_count}, observed={observed_count}")
+    return observed_count
 
 
 def _validate_normal_sample_count(frame: DataFrame, label: str, expected_count: int) -> None:

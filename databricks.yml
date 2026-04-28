@@ -306,6 +306,8 @@ targets:
                   - "20"
                   - --sample-size
                   - "20"
+                  - --validation-mode
+                  - light
 
   prod:
     mode: production
