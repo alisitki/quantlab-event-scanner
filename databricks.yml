@@ -308,6 +308,14 @@ targets:
                   - "20"
                   - --validation-mode
                   - light
+                  - --raw-day-repartition-partitions
+                  - "96"
+                  - --raw-day-bucket-seconds
+                  - "60"
+                  - --selected-output-partitions
+                  - "200"
+                  - --small-output-partitions
+                  - "1"
 
   prod:
     mode: production

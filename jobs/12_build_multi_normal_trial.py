@@ -108,6 +108,10 @@ DEFAULT_THRESHOLD_PCT = 1.0
 DEFAULT_HORIZON_SECONDS = 60
 DEFAULT_PROXIMITY_SECONDS = 1800
 DEFAULT_ANCHOR_STEP_SECONDS = 60
+DEFAULT_RAW_DAY_REPARTITION_PARTITIONS = 96
+DEFAULT_RAW_DAY_BUCKET_SECONDS = 60
+DEFAULT_SELECTED_OUTPUT_PARTITIONS = 200
+DEFAULT_SMALL_OUTPUT_PARTITIONS = 1
 
 EXCHANGE_PROFILE_KEYS = ("exchange", "symbol_key", "window_mode", "window_label")
 CROSS_EXCHANGE_KEYS = ("symbol_key", "window_mode", "window_label", "exchange_pair")
@@ -233,6 +237,10 @@ def main() -> None:
     LOGGER.info("Comparison output path: %s", comparison_output_path)
     LOGGER.info("Top diff output path: %s", top_diff_output_path)
     LOGGER.info("Validation mode: %s", args.validation_mode)
+    LOGGER.info("Raw day repartition partitions: %s", args.raw_day_repartition_partitions)
+    LOGGER.info("Raw day bucket seconds: %s", args.raw_day_bucket_seconds)
+    LOGGER.info("Selected output partitions: %s", args.selected_output_partitions)
+    LOGGER.info("Small output partitions: %s", args.small_output_partitions)
 
     spark = _get_spark_session()
     spark.conf.set("spark.sql.session.timeZone", "UTC")
@@ -259,10 +267,10 @@ def main() -> None:
             args.event_id,
         ).cache()
         event_activity = _event_activity_source(event_exchange, config.exchanges).cache()
-        _log_df_metrics("event_exchange", event_exchange, include_count=True, exchange=True, symbol=True)
-        _log_df_metrics("event_cross", event_cross, include_count=True)
-        _log_df_metrics("event_bucket", event_bucket, include_count=True, exchange=True, symbol=True)
-        _log_df_metrics("event_activity", event_activity, include_count=True, exchange=True)
+        _log_df_metrics("event_exchange", event_exchange)
+        _log_df_metrics("event_cross", event_cross)
+        _log_df_metrics("event_bucket", event_bucket)
+        _log_df_metrics("event_activity", event_activity)
 
     with _phase2j_timer("manifest_load"):
         manifest = load_manifest_from_s3_with_spark(spark, config.manifest_path)
@@ -284,10 +292,20 @@ def main() -> None:
     _log_partition_coverage("BBO manifest", config.exchanges, bbo_partitions)
 
     with _phase2j_timer("trade_day_read_cache_materialize"):
-        trade_day = _read_partitions(spark, trade_partitions, config.input_root, "trade").cache()
+        trade_day = _repartition_raw_day(
+            _read_partitions(spark, trade_partitions, config.input_root, "trade"),
+            "trade_day",
+            partitions=args.raw_day_repartition_partitions,
+            bucket_seconds=args.raw_day_bucket_seconds,
+        ).cache()
         _log_df_metrics("trade_day", trade_day, include_count=True, exchange=True, symbol=True)
     with _phase2j_timer("bbo_day_read_cache_materialize"):
-        bbo_day = _read_partitions(spark, bbo_partitions, config.input_root, "BBO").cache()
+        bbo_day = _repartition_raw_day(
+            _read_partitions(spark, bbo_partitions, config.input_root, "BBO"),
+            "bbo_day",
+            partitions=args.raw_day_repartition_partitions,
+            bucket_seconds=args.raw_day_bucket_seconds,
+        ).cache()
         _log_df_metrics("bbo_day", bbo_day, include_count=True, exchange=True, symbol=True)
     _validate_required_trade_columns(trade_day)
     _validate_required_bbo_columns(bbo_day)
@@ -406,6 +424,8 @@ def main() -> None:
             excluded_candidate_count=total_anchors - len(anchor_candidates),
             selected_normal_count=args.selected_normal_count,
             min_anchor_spacing_seconds=args.min_anchor_spacing_seconds,
+            selected_output_partitions=args.selected_output_partitions,
+            selected_join_bucket_seconds=args.raw_day_bucket_seconds,
         )
         _log_df_metrics("normal_trade_windows", normal_trade, normal_sample_id=True, exchange=True, symbol=True)
         _log_df_metrics("normal_bbo_windows", normal_bbo, normal_sample_id=True, exchange=True, symbol=True)
@@ -488,29 +508,41 @@ def main() -> None:
         _log_df_metrics("comparison_input_bucket_change_profile", normal_bucket_for_comparison, normal_sample_id=True, exchange=True, symbol=True)
 
     with _phase2j_timer("comparison_build"):
-        exchange_comparison = _build_exchange_profile_distribution_comparison(
-            phase2f,
-            event_exchange,
-            normal_exchange_for_comparison,
-            run_id,
-            args.event_profile_run_id,
-            created_at,
+        exchange_comparison = _coalesce_small_output(
+            _build_exchange_profile_distribution_comparison(
+                phase2f,
+                event_exchange,
+                normal_exchange_for_comparison,
+                run_id,
+                args.event_profile_run_id,
+                created_at,
+            ),
+            args.small_output_partitions,
+            "exchange_profile_comparison",
         ).cache()
-        cross_comparison = _build_cross_exchange_distribution_comparison(
-            phase2f,
-            event_cross,
-            normal_cross_for_comparison,
-            run_id,
-            args.event_profile_run_id,
-            created_at,
+        cross_comparison = _coalesce_small_output(
+            _build_cross_exchange_distribution_comparison(
+                phase2f,
+                event_cross,
+                normal_cross_for_comparison,
+                run_id,
+                args.event_profile_run_id,
+                created_at,
+            ),
+            args.small_output_partitions,
+            "cross_exchange_mid_diff_comparison",
         ).cache()
-        bucket_comparison = _build_bucket_change_distribution_comparison(
-            phase2f,
-            event_bucket,
-            normal_bucket_for_comparison,
-            run_id,
-            args.event_profile_run_id,
-            created_at,
+        bucket_comparison = _coalesce_small_output(
+            _build_bucket_change_distribution_comparison(
+                phase2f,
+                event_bucket,
+                normal_bucket_for_comparison,
+                run_id,
+                args.event_profile_run_id,
+                created_at,
+            ),
+            args.small_output_partitions,
+            "bucket_change_profile_comparison",
         ).cache()
         _log_df_metrics("exchange_profile_comparison", exchange_comparison, normal_sample_id=False)
         _log_df_metrics("cross_exchange_mid_diff_comparison", cross_comparison, normal_sample_id=False)
@@ -603,6 +635,7 @@ def main() -> None:
         created_at,
         args.sample_size,
         args.validation_mode,
+        args.small_output_partitions,
     )
     _write_top_diffs(
         phase2e,
@@ -614,6 +647,7 @@ def main() -> None:
         created_at,
         args.sample_size,
         args.validation_mode,
+        args.small_output_partitions,
     )
     _write_top_diffs(
         phase2e,
@@ -625,6 +659,7 @@ def main() -> None:
         created_at,
         args.sample_size,
         args.validation_mode,
+        args.small_output_partitions,
     )
 
     bucket_comparison_for_top_diffs.unpersist()
@@ -685,6 +720,30 @@ def _parse_args() -> argparse.Namespace:
         choices=("strict", "light"),
         default="light",
         help="Output validation mode. Phase 2J defaults to light to avoid repeated readback actions.",
+    )
+    parser.add_argument(
+        "--raw-day-repartition-partitions",
+        type=int,
+        default=DEFAULT_RAW_DAY_REPARTITION_PARTITIONS,
+        help="Partition count after raw trade/BBO day reads; 0 disables raw-day repartition.",
+    )
+    parser.add_argument(
+        "--raw-day-bucket-seconds",
+        type=int,
+        default=DEFAULT_RAW_DAY_BUCKET_SECONDS,
+        help="Time-bucket width used with exchange/symbol for raw-day repartition.",
+    )
+    parser.add_argument(
+        "--selected-output-partitions",
+        type=int,
+        default=DEFAULT_SELECTED_OUTPUT_PARTITIONS,
+        help="Partition count for selected normal trade/BBO/snapshot/profile DataFrames.",
+    )
+    parser.add_argument(
+        "--small-output-partitions",
+        type=int,
+        default=DEFAULT_SMALL_OUTPUT_PARTITIONS,
+        help="Coalesced partition count for small comparison and top-diff outputs; 0 disables coalesce.",
     )
     return parser.parse_args()
 
@@ -834,6 +893,80 @@ def _read_partitions(
     for path in paths[:20]:
         LOGGER.info("  %s", path)
     return spark.read.parquet(*paths)
+
+
+def _repartition_raw_day(
+    frame: DataFrame,
+    name: str,
+    *,
+    partitions: int,
+    bucket_seconds: int,
+) -> DataFrame:
+    if partitions <= 0:
+        LOGGER.info("[PHASE2J_DF] name=%s raw_day_repartition=disabled", name)
+        return frame
+    if bucket_seconds <= 0:
+        raise ValueError("raw-day bucket seconds must be greater than 0 when repartition is enabled.")
+
+    ts_event_expr = timestamp_expression(frame, "ts_event")
+    if ts_event_expr is None:
+        LOGGER.info(
+            "[PHASE2J_DF] name=%s raw_day_repartition_partitions=%s "
+            "bucket_seconds=unavailable fallback=exchange_symbol",
+            name,
+            partitions,
+        )
+        return frame.repartition(partitions, F.lower(F.col("exchange")), F.lower(F.col("symbol")))
+
+    bucket_column = "_phase2j_raw_time_bucket"
+    ts_column = "_phase2j_raw_ts_event_ts"
+    LOGGER.info(
+        "[PHASE2J_DF] name=%s raw_day_repartition_partitions=%s "
+        "bucket_seconds=%s keys=exchange,symbol,time_bucket",
+        name,
+        partitions,
+        bucket_seconds,
+    )
+    return (
+        frame.withColumn(ts_column, ts_event_expr)
+        .withColumn(
+            bucket_column,
+            F.floor(F.col(ts_column).cast("double") / F.lit(bucket_seconds)).cast("long"),
+        )
+        .repartition(
+            partitions,
+            F.lower(F.col("exchange")),
+            F.lower(F.col("symbol")),
+            F.col(bucket_column),
+        )
+        .drop(ts_column)
+    )
+
+
+def _repartition_selected_output(
+    frame: DataFrame,
+    partitions: int,
+    label: str,
+    *columns: str,
+) -> DataFrame:
+    if partitions <= 0:
+        LOGGER.info("[PHASE2J_DF] name=%s selected_output_repartition=disabled", label)
+        return frame.repartition(*columns)
+    LOGGER.info(
+        "[PHASE2J_DF] name=%s selected_output_repartition_partitions=%s keys=%s",
+        label,
+        partitions,
+        ",".join(columns),
+    )
+    return frame.repartition(partitions, *columns)
+
+
+def _coalesce_small_output(frame: DataFrame, partitions: int, label: str) -> DataFrame:
+    if partitions <= 0:
+        LOGGER.info("[PHASE2J_DF] name=%s small_output_coalesce=disabled", label)
+        return frame
+    LOGGER.info("[PHASE2J_DF] name=%s small_output_coalesce_partitions=%s", label, partitions)
+    return frame.coalesce(partitions)
 
 
 def _validate_required_trade_columns(frame: DataFrame) -> None:
@@ -1284,6 +1417,8 @@ def _build_selected_outputs(
     excluded_candidate_count: int,
     selected_normal_count: int,
     min_anchor_spacing_seconds: int,
+    selected_output_partitions: int,
+    selected_join_bucket_seconds: int,
 ) -> tuple[DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame]:
     del candidate_starts
     spark = trade_day.sparkSession
@@ -1300,29 +1435,52 @@ def _build_selected_outputs(
     _log_df_metrics("selected_normals_df", selected_normals_df, include_count=True, normal_sample_id=True)
 
     with _phase2j_timer("normal_trade_output_build"):
-        normal_trade = _extract_multi_normal_trade_window(
-            trade_day,
-            selected_normals_df,
-            run_id,
-            created_at,
-        ).repartition("normal_sample_id", "exchange", "symbol").cache()
+        normal_trade = _repartition_selected_output(
+            _extract_multi_normal_trade_window(
+                trade_day,
+                selected_normals_df,
+                run_id,
+                created_at,
+                selected_join_bucket_seconds=selected_join_bucket_seconds,
+            ),
+            selected_output_partitions,
+            "normal_trade_windows",
+            "normal_sample_id",
+            "exchange",
+            "symbol",
+        ).cache()
     with _phase2j_timer("normal_bbo_output_build"):
-        normal_bbo = _extract_multi_normal_bbo_window(
-            bbo_day,
-            selected_normals_df,
-            run_id,
-            created_at,
-        ).repartition("normal_sample_id", "exchange", "symbol").cache()
+        normal_bbo = _repartition_selected_output(
+            _extract_multi_normal_bbo_window(
+                bbo_day,
+                selected_normals_df,
+                run_id,
+                created_at,
+                selected_join_bucket_seconds=selected_join_bucket_seconds,
+            ),
+            selected_output_partitions,
+            "normal_bbo_windows",
+            "normal_sample_id",
+            "exchange",
+            "symbol",
+        ).cache()
     with _phase2j_timer("snapshot_build"):
-        normal_snapshot = _build_multi_normal_snapshot(
-            phase2e,
-            normal_trade,
-            normal_bbo,
-            selected_normals_df,
-            expected_exchanges,
-            run_id,
-            created_at,
-        ).repartition("normal_sample_id", "exchange", "symbol").cache()
+        normal_snapshot = _repartition_selected_output(
+            _build_multi_normal_snapshot(
+                phase2e,
+                normal_trade,
+                normal_bbo,
+                selected_normals_df,
+                expected_exchanges,
+                run_id,
+                created_at,
+            ),
+            selected_output_partitions,
+            "multi_normal_market_snapshots",
+            "normal_sample_id",
+            "exchange",
+            "symbol",
+        ).cache()
     with _phase2j_timer("profile_build"):
         normal_exchange, normal_cross, normal_bucket = _build_multi_normal_profiles(
             phase2e,
@@ -1331,9 +1489,29 @@ def _build_selected_outputs(
             run_id,
             created_at,
         )
-        normal_exchange = normal_exchange.repartition("normal_sample_id", "exchange", "symbol").cache()
-        normal_cross = normal_cross.repartition("normal_sample_id", "symbol_key").cache()
-        normal_bucket = normal_bucket.repartition("normal_sample_id", "exchange", "symbol").cache()
+        normal_exchange = _repartition_selected_output(
+            normal_exchange,
+            selected_output_partitions,
+            "exchange_profile",
+            "normal_sample_id",
+            "exchange",
+            "symbol",
+        ).cache()
+        normal_cross = _repartition_selected_output(
+            normal_cross,
+            selected_output_partitions,
+            "cross_exchange_mid_diff",
+            "normal_sample_id",
+            "symbol_key",
+        ).cache()
+        normal_bucket = _repartition_selected_output(
+            normal_bucket,
+            selected_output_partitions,
+            "bucket_change_profile",
+            "normal_sample_id",
+            "exchange",
+            "symbol",
+        ).cache()
     selected_normals_df.unpersist()
     return (
         normal_trade,
@@ -1434,6 +1612,21 @@ def _selected_normals_frame(
     )
 
 
+def _selected_normals_with_time_buckets(selected_normals: DataFrame, *, bucket_seconds: int) -> DataFrame:
+    if bucket_seconds <= 0:
+        raise ValueError("selected-normal join bucket seconds must be greater than 0.")
+    start_bucket = F.floor(
+        F.col("normal_window_start_ts").cast("double") / F.lit(bucket_seconds)
+    ).cast("long")
+    end_bucket = F.floor(
+        (F.col("normal_window_end_ts").cast("double") - F.lit(0.000001)) / F.lit(bucket_seconds)
+    ).cast("long")
+    return selected_normals.withColumn(
+        "_phase2j_window_bucket",
+        F.explode(F.sequence(start_bucket, end_bucket)),
+    )
+
+
 def _metadata_columns_from_normal_alias(alias: str, created_at: datetime) -> tuple[Any, ...]:
     return (
         F.col(f"{alias}.sample_type").alias("sample_type"),
@@ -1464,18 +1657,31 @@ def _extract_multi_normal_trade_window(
     selected_normals: DataFrame,
     run_id: str,
     created_at: datetime,
+    *,
+    selected_join_bucket_seconds: int,
 ) -> DataFrame:
     ts_event_expr = timestamp_expression(trade_day, "ts_event")
     ts_recv_expr = timestamp_expression(trade_day, "ts_recv")
     if ts_event_expr is None or ts_recv_expr is None:
         raise RuntimeError("Unable to convert trade ts_event or ts_recv to timestamp.")
+    trade_base = trade_day.withColumn("ts_event_ts", ts_event_expr).withColumn("ts_recv_ts", ts_recv_expr)
+    if "_phase2j_raw_time_bucket" not in trade_base.columns:
+        trade_base = trade_base.withColumn(
+            "_phase2j_raw_time_bucket",
+            F.floor(
+                F.col("ts_event_ts").cast("double") / F.lit(selected_join_bucket_seconds)
+            ).cast("long"),
+        )
+    selected_buckets = _selected_normals_with_time_buckets(
+        selected_normals,
+        bucket_seconds=selected_join_bucket_seconds,
+    )
     enriched = (
-        trade_day.withColumn("ts_event_ts", ts_event_expr)
-        .withColumn("ts_recv_ts", ts_recv_expr)
-        .alias("trade")
+        trade_base.alias("trade")
         .join(
-            F.broadcast(selected_normals.alias("normal")),
-            (F.col("trade.ts_event_ts") >= F.col("normal.normal_window_start_ts"))
+            F.broadcast(selected_buckets.alias("normal")),
+            (F.col("trade._phase2j_raw_time_bucket") == F.col("normal._phase2j_window_bucket"))
+            & (F.col("trade.ts_event_ts") >= F.col("normal.normal_window_start_ts"))
             & (F.col("trade.ts_event_ts") < F.col("normal.normal_window_end_ts")),
             "inner",
         )
@@ -1512,18 +1718,31 @@ def _extract_multi_normal_bbo_window(
     selected_normals: DataFrame,
     run_id: str,
     created_at: datetime,
+    *,
+    selected_join_bucket_seconds: int,
 ) -> DataFrame:
     ts_event_expr = timestamp_expression(bbo_day, "ts_event")
     ts_recv_expr = timestamp_expression(bbo_day, "ts_recv")
     if ts_event_expr is None or ts_recv_expr is None:
         raise RuntimeError("Unable to convert BBO ts_event or ts_recv to timestamp.")
+    bbo_base = bbo_day.withColumn("ts_event_ts", ts_event_expr).withColumn("ts_recv_ts", ts_recv_expr)
+    if "_phase2j_raw_time_bucket" not in bbo_base.columns:
+        bbo_base = bbo_base.withColumn(
+            "_phase2j_raw_time_bucket",
+            F.floor(
+                F.col("ts_event_ts").cast("double") / F.lit(selected_join_bucket_seconds)
+            ).cast("long"),
+        )
+    selected_buckets = _selected_normals_with_time_buckets(
+        selected_normals,
+        bucket_seconds=selected_join_bucket_seconds,
+    )
     enriched = (
-        bbo_day.withColumn("ts_event_ts", ts_event_expr)
-        .withColumn("ts_recv_ts", ts_recv_expr)
-        .alias("bbo")
+        bbo_base.alias("bbo")
         .join(
-            F.broadcast(selected_normals.alias("normal")),
-            (F.col("bbo.ts_event_ts") >= F.col("normal.normal_window_start_ts"))
+            F.broadcast(selected_buckets.alias("normal")),
+            (F.col("bbo._phase2j_raw_time_bucket") == F.col("normal._phase2j_window_bucket"))
+            & (F.col("bbo.ts_event_ts") >= F.col("normal.normal_window_start_ts"))
             & (F.col("bbo.ts_event_ts") < F.col("normal.normal_window_end_ts")),
             "inner",
         )
@@ -2585,9 +2804,14 @@ def _write_top_diffs(
     created_at: datetime,
     sample_size: int,
     validation_mode: str,
+    small_output_partitions: int,
 ) -> None:
     with _phase2j_timer(f"top_diff_build_{label}"):
-        top_diffs = _build_top_diffs(comparison, run_id=run_id, top_n=top_n, created_at=created_at).cache()
+        top_diffs = _coalesce_small_output(
+            _build_top_diffs(comparison, run_id=run_id, top_n=top_n, created_at=created_at),
+            small_output_partitions,
+            label,
+        ).cache()
         top_diff_count = _log_df_metrics(label, top_diffs, include_count=True)
     _log_top_diff_group_counts(comparison, top_diffs, label)
     with _phase2j_timer(f"write_validate_{label}"):
