@@ -4,7 +4,6 @@ bundle:
 variables:
   cluster_id:
     description: Existing classic Databricks cluster ID for probe and fallback runs.
-    default: 0426-145152-cv6y6ado
 
 targets:
   dev_serverless:
@@ -169,6 +168,142 @@ targets:
                   - "300"
                   - --allow-partial-coverage
                   - "false"
+                  - --sample-size
+                  - "20"
+
+        phase2c_pre_event_market_snapshots_trial_classic:
+          name: phase2c_pre_event_market_snapshots_trial_classic
+          tasks:
+            - task_key: build_pre_event_market_snapshots_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/07_build_pre_event_market_snapshots_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --source-trade-run-id
+                  - phase2a_20260427T071919Z
+                  - --source-bbo-run-id
+                  - phase2b_20260427T074205Z
+                  - --event-id
+                  - binance_btcusdt_20260423_down_001
+                  - --lookback-seconds
+                  - "300"
+                  - --sample-size
+                  - "20"
+
+        phase2d_pre_event_profile_report_trial_classic:
+          name: phase2d_pre_event_profile_report_trial_classic
+          tasks:
+            - task_key: profile_pre_event_market_snapshots_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/08_profile_pre_event_market_snapshots_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --source-snapshot-run-id
+                  - phase2c_20260427T082248Z
+                  - --event-id
+                  - binance_btcusdt_20260423_down_001
+                  - --lookback-seconds
+                  - "300"
+                  - --sample-size
+                  - "20"
+
+        phase2e_normal_time_trial_classic:
+          name: phase2e_normal_time_trial_classic
+          tasks:
+            - task_key: build_normal_time_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/09_build_normal_time_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --date
+                  - "20260423"
+                  - --lookback-seconds
+                  - "300"
+                  - --threshold-pct
+                  - "1.0"
+                  - --horizon-seconds
+                  - "60"
+                  - --proximity-seconds
+                  - "1800"
+                  - --max-quality-attempts
+                  - "20"
+                  - --sample-size
+                  - "20"
+
+        phase2f_profile_comparison_trial_classic:
+          name: phase2f_profile_comparison_trial_classic
+          tasks:
+            - task_key: compare_event_vs_normal_profiles_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/10_compare_event_vs_normal_profiles_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --event-profile-run-id
+                  - phase2d_20260427T090707Z
+                  - --normal-profile-run-id
+                  - phase2e_20260427T093700Z
+                  - --event-id
+                  - binance_btcusdt_20260423_down_001
+                  - --sample-size
+                  - "20"
+
+        phase2g_profile_comparison_top_diffs_trial_classic:
+          name: phase2g_profile_comparison_top_diffs_trial_classic
+          tasks:
+            - task_key: inspect_profile_comparison_top_diffs_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/11_inspect_profile_comparison_top_diffs_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --source-comparison-run-id
+                  - phase2f_20260427T113721Z
+                  - --top-n
+                  - "20"
+                  - --sample-size
+                  - "20"
+
+        phase2j_multi_normal_trial_classic:
+          name: phase2j_multi_normal_trial_classic
+          tasks:
+            - task_key: build_multi_normal_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/12_build_multi_normal_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --event-profile-run-id
+                  - phase2d_20260427T090707Z
+                  - --event-id
+                  - binance_btcusdt_20260423_down_001
+                  - --date
+                  - "20260423"
+                  - --lookback-seconds
+                  - "300"
+                  - --threshold-pct
+                  - "1.0"
+                  - --horizon-seconds
+                  - "60"
+                  - --proximity-seconds
+                  - "1800"
+                  - --anchor-step-seconds
+                  - "60"
+                  - --selected-normal-count
+                  - "10"
+                  - --min-anchor-spacing-seconds
+                  - "1800"
+                  - --top-n
+                  - "20"
                   - --sample-size
                   - "20"
 

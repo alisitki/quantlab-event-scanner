@@ -62,6 +62,84 @@ def pre_event_bbo_windows_trial_run_path(config: ScannerConfig, run_id: str) -> 
     return f"{config.output_root}/pre_event_bbo_windows/_trial/run_id={run_id}"
 
 
+def pre_event_market_snapshots_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial 1-second market snapshots output path for a run."""
+
+    return f"{config.output_root}/pre_event_market_snapshots/_trial/run_id={run_id}"
+
+
+def pre_event_profile_reports_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial pre-event profile reports output path for a run."""
+
+    return f"{config.output_root}/pre_event_profile_reports/_trial/run_id={run_id}"
+
+
+def normal_trade_windows_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial normal trade windows output path for a run."""
+
+    return f"{config.output_root}/normal_trade_windows/_trial/run_id={run_id}"
+
+
+def normal_bbo_windows_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial normal BBO windows output path for a run."""
+
+    return f"{config.output_root}/normal_bbo_windows/_trial/run_id={run_id}"
+
+
+def normal_market_snapshots_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial normal market snapshots output path for a run."""
+
+    return f"{config.output_root}/normal_market_snapshots/_trial/run_id={run_id}"
+
+
+def normal_profile_reports_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial normal profile reports output path for a run."""
+
+    return f"{config.output_root}/normal_profile_reports/_trial/run_id={run_id}"
+
+
+def profile_comparison_reports_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial event-vs-normal profile comparison output path for a run."""
+
+    return f"{config.output_root}/profile_comparison_reports/_trial/run_id={run_id}"
+
+
+def profile_comparison_top_diffs_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial profile comparison top-diff inspection output path for a run."""
+
+    return f"{config.output_root}/profile_comparison_top_diffs/_trial/run_id={run_id}"
+
+
+def multi_normal_windows_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial multi-normal raw window output path for a run."""
+
+    return f"{config.output_root}/multi_normal_windows/_trial/run_id={run_id}"
+
+
+def multi_normal_market_snapshots_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial multi-normal market snapshot output path for a run."""
+
+    return f"{config.output_root}/multi_normal_market_snapshots/_trial/run_id={run_id}"
+
+
+def multi_normal_profile_reports_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial multi-normal profile reports output path for a run."""
+
+    return f"{config.output_root}/multi_normal_profile_reports/_trial/run_id={run_id}"
+
+
+def multi_normal_comparison_reports_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial multi-normal comparison reports output path for a run."""
+
+    return f"{config.output_root}/multi_normal_comparison_reports/_trial/run_id={run_id}"
+
+
+def multi_normal_top_diffs_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the trial multi-normal top-diff inspection output path for a run."""
+
+    return f"{config.output_root}/multi_normal_top_diffs/_trial/run_id={run_id}"
+
+
 def normal_time_comparison_path(config: ScannerConfig) -> str:
     """Return the configured normal-time comparison output path."""
 

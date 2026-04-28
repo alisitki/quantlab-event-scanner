@@ -4,11 +4,24 @@ from quantlab_event_scanner.paths import (
     events_map_path,
     events_map_trial_run_path,
     manifest_path,
+    multi_normal_comparison_reports_trial_run_path,
+    multi_normal_market_snapshots_trial_run_path,
+    multi_normal_profile_reports_trial_run_path,
+    multi_normal_top_diffs_trial_run_path,
+    multi_normal_windows_trial_run_path,
+    normal_bbo_windows_trial_run_path,
+    normal_market_snapshots_trial_run_path,
+    normal_profile_reports_trial_run_path,
+    normal_trade_windows_trial_run_path,
     normal_time_comparison_path,
     output_path,
     pre_event_bbo_windows_trial_run_path,
+    pre_event_market_snapshots_trial_run_path,
+    pre_event_profile_reports_trial_run_path,
     pre_event_windows_path,
     pre_event_windows_trial_run_path,
+    profile_comparison_reports_trial_run_path,
+    profile_comparison_top_diffs_trial_run_path,
     price_1s_path,
     raw_candidates_trial_run_path,
 )
@@ -67,6 +80,45 @@ def test_trial_output_paths_are_partitioned_by_run_id() -> None:
     )
     assert pre_event_bbo_windows_trial_run_path(config, "phase2b_test") == (
         "s3://quantlab-research/pre_event_bbo_windows/_trial/run_id=phase2b_test"
+    )
+    assert pre_event_market_snapshots_trial_run_path(config, "phase2c_test") == (
+        "s3://quantlab-research/pre_event_market_snapshots/_trial/run_id=phase2c_test"
+    )
+    assert pre_event_profile_reports_trial_run_path(config, "phase2d_test") == (
+        "s3://quantlab-research/pre_event_profile_reports/_trial/run_id=phase2d_test"
+    )
+    assert normal_trade_windows_trial_run_path(config, "phase2e_test") == (
+        "s3://quantlab-research/normal_trade_windows/_trial/run_id=phase2e_test"
+    )
+    assert normal_bbo_windows_trial_run_path(config, "phase2e_test") == (
+        "s3://quantlab-research/normal_bbo_windows/_trial/run_id=phase2e_test"
+    )
+    assert normal_market_snapshots_trial_run_path(config, "phase2e_test") == (
+        "s3://quantlab-research/normal_market_snapshots/_trial/run_id=phase2e_test"
+    )
+    assert normal_profile_reports_trial_run_path(config, "phase2e_test") == (
+        "s3://quantlab-research/normal_profile_reports/_trial/run_id=phase2e_test"
+    )
+    assert profile_comparison_reports_trial_run_path(config, "phase2f_test") == (
+        "s3://quantlab-research/profile_comparison_reports/_trial/run_id=phase2f_test"
+    )
+    assert profile_comparison_top_diffs_trial_run_path(config, "phase2g_test") == (
+        "s3://quantlab-research/profile_comparison_top_diffs/_trial/run_id=phase2g_test"
+    )
+    assert multi_normal_windows_trial_run_path(config, "phase2j_test") == (
+        "s3://quantlab-research/multi_normal_windows/_trial/run_id=phase2j_test"
+    )
+    assert multi_normal_market_snapshots_trial_run_path(config, "phase2j_test") == (
+        "s3://quantlab-research/multi_normal_market_snapshots/_trial/run_id=phase2j_test"
+    )
+    assert multi_normal_profile_reports_trial_run_path(config, "phase2j_test") == (
+        "s3://quantlab-research/multi_normal_profile_reports/_trial/run_id=phase2j_test"
+    )
+    assert multi_normal_comparison_reports_trial_run_path(config, "phase2j_test") == (
+        "s3://quantlab-research/multi_normal_comparison_reports/_trial/run_id=phase2j_test"
+    )
+    assert multi_normal_top_diffs_trial_run_path(config, "phase2j_test") == (
+        "s3://quantlab-research/multi_normal_top_diffs/_trial/run_id=phase2j_test"
     )
 
 
