@@ -789,6 +789,63 @@ Verified on 2026-04-27 against `dev_classic`:
   `cross_exchange_mid_diff_top_diffs=120`,
   `bucket_change_profile_top_diffs=156`.
 
+## Phase 3A - BTC multi-event trial
+
+Phase 3A is split into two classic jobs to keep the expensive accepted run from
+carrying long Spark lineage into final top-diff and summary generation.
+
+Job A, `phase3a_btc_multi_event_trial_classic`, selects BTC `%1 / 60s` grouped
+events, selects activity-matched normal windows, writes snapshots, profiles, and
+comparison reports, validates those reports, and then stops. It does not build
+top diffs or final summary tables.
+
+Job B, `phase3a_btc_multi_event_finalize_classic`, takes
+`--source-run-id <phase3a_run_id>`, fresh-reads Job A comparison reports from
+`s3://quantlab-research/btc_multi_event_trials/_trial/run_id=<phase3a_run_id>/`,
+then writes `top_diffs/` and `summary/` under the same umbrella root.
+
+Accepted retry commands:
+
+```bash
+databricks bundle run phase3a_btc_multi_event_trial_classic \
+  -t dev_classic \
+  --profile quantlab-classic \
+  --var cluster_id=<classic_cluster_id> \
+  --python-params='--config,configs/dev.yaml,--start-date,20260203,--end-date,20260426,--max-events,10,--min-events,2,--normal-count-per-event,10,--lookback-seconds,300,--horizon-seconds,60,--move-threshold-pct,1.0,--exclusion-seconds,1800,--min-normal-anchor-spacing-seconds,1800,--validation-mode,light,--write-raw-windows,false,--allow-partial-coverage,false,--sample-size,0'
+
+databricks bundle run phase3a_btc_multi_event_finalize_classic \
+  -t dev_classic \
+  --profile quantlab-classic \
+  --var cluster_id=<classic_cluster_id> \
+  --python-params='--config,configs/dev.yaml,--source-run-id,<phase3a_run_id>,--normal-count-per-event,10,--top-n,20,--sample-size,0,--validation-mode,light,--small-output-partitions,1'
+```
+
+Accepted retry compute should use a large driver, not `m5d.large`: prefer
+`r6i.8xlarge` driver with `32 x r6i.2xlarge` workers, Photon enabled, autoscale
+off. `r6i.4xlarge` driver is acceptable if `r6i.8xlarge` is unavailable.
+
+Verified accepted retry on 2026-04-29:
+
+- Source run ID: `phase3a_20260429T085638Z`.
+- Output root:
+  `s3://quantlab-research/btc_multi_event_trials/_trial/run_id=phase3a_20260429T085638Z`.
+- Job A run `358829999567665` completed with `selected_event_count=10` and
+  `stage=comparison_reports_complete`.
+- Job B run `159108292725392` completed with `stage=finalize_complete`.
+- Comparison rows validated as exchange `6600`, cross-exchange `1500`, and
+  bucket-change `960`.
+- Final top diffs wrote exchange `1800`, cross-exchange `1200`, and
+  bucket-change `1560` rows.
+- Summary outputs wrote `event_counts_by_direction=2`,
+  `metric_group_summary=80`, `normal_selection_quality=10`, and
+  `event_processing_status=10`.
+- Validation checks passed with `normal_sample_count` invalid rows `0`,
+  `metric_group` null rows `0`, `absolute_diff_vs_mean` negative rows `0`, and
+  top-diff dynamic mismatch count `0`.
+- Working compute was a hybrid quota-safe profile: `r6i.4xlarge` on-demand
+  driver, `28 x r6i.2xlarge` spot workers, `availability=SPOT`,
+  `first_on_demand=1`, Photon enabled.
+
 ## Classic Cluster Notes
 
 Classic cluster IDs are supplied at runtime with

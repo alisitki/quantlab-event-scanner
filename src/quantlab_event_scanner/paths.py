@@ -140,6 +140,18 @@ def multi_normal_top_diffs_trial_run_path(config: ScannerConfig, run_id: str) ->
     return f"{config.output_root}/multi_normal_top_diffs/_trial/run_id={run_id}"
 
 
+def btc_multi_event_trial_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the Phase 3A BTC multi-event trial umbrella path for a run."""
+
+    return f"{config.output_root}/btc_multi_event_trials/_trial/run_id={run_id}"
+
+
+def btc_event_coverage_probe_run_path(config: ScannerConfig, run_id: str) -> str:
+    """Return the Phase 3A-1 BTC coverage probe umbrella path for a run."""
+
+    return f"{config.output_root}/btc_multi_event_trials/_probe/run_id={run_id}"
+
+
 def normal_time_comparison_path(config: ScannerConfig) -> str:
     """Return the configured normal-time comparison output path."""
 

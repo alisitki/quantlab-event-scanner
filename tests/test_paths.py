@@ -1,5 +1,7 @@
 from quantlab_event_scanner.config import validate_config
 from quantlab_event_scanner.paths import (
+    btc_event_coverage_probe_run_path,
+    btc_multi_event_trial_run_path,
     compacted_partition_path,
     events_map_path,
     events_map_trial_run_path,
@@ -119,6 +121,12 @@ def test_trial_output_paths_are_partitioned_by_run_id() -> None:
     )
     assert multi_normal_top_diffs_trial_run_path(config, "phase2j_test") == (
         "s3://quantlab-research/multi_normal_top_diffs/_trial/run_id=phase2j_test"
+    )
+    assert btc_multi_event_trial_run_path(config, "phase3a_test") == (
+        "s3://quantlab-research/btc_multi_event_trials/_trial/run_id=phase3a_test"
+    )
+    assert btc_event_coverage_probe_run_path(config, "phase3a_probe_test") == (
+        "s3://quantlab-research/btc_multi_event_trials/_probe/run_id=phase3a_probe_test"
     )
 
 

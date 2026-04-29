@@ -317,6 +317,105 @@ targets:
                   - --small-output-partitions
                   - "1"
 
+        phase3a_btc_multi_event_trial_classic:
+          name: phase3a_btc_multi_event_trial_classic
+          tasks:
+            - task_key: build_btc_multi_event_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/13_build_btc_multi_event_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --start-date
+                  - "20260423"
+                  - --end-date
+                  - "20260423"
+                  - --max-events
+                  - "5"
+                  - --normal-count-per-event
+                  - "10"
+                  - --lookback-seconds
+                  - "300"
+                  - --horizon-seconds
+                  - "60"
+                  - --move-threshold-pct
+                  - "1.0"
+                  - --exclusion-seconds
+                  - "1800"
+                  - --min-normal-anchor-spacing-seconds
+                  - "1800"
+                  - --validation-mode
+                  - light
+                  - --write-raw-windows
+                  - "false"
+                  - --allow-partial-coverage
+                  - "false"
+                  - --sample-size
+                  - "20"
+                  - --raw-day-repartition-partitions
+                  - "96"
+                  - --raw-day-bucket-seconds
+                  - "60"
+                  - --selected-output-partitions
+                  - "200"
+                  - --small-output-partitions
+                  - "1"
+
+        phase3a_btc_multi_event_finalize_classic:
+          name: phase3a_btc_multi_event_finalize_classic
+          tasks:
+            - task_key: finalize_btc_multi_event_trial
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/15_finalize_btc_multi_event_trial.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --source-run-id
+                  - phase3a_SOURCE_RUN_ID
+                  - --normal-count-per-event
+                  - "10"
+                  - --top-n
+                  - "20"
+                  - --sample-size
+                  - "0"
+                  - --validation-mode
+                  - light
+                  - --small-output-partitions
+                  - "1"
+
+        phase3a_btc_event_coverage_probe_classic:
+          name: phase3a_btc_event_coverage_probe_classic
+          tasks:
+            - task_key: probe_btc_event_coverage
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/14_probe_btc_event_coverage.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --start-date
+                  - "20260420"
+                  - --end-date
+                  - "20260425"
+                  - --symbol-family
+                  - btc
+                  - --exchanges
+                  - binance,bybit,okx
+                  - --horizon-seconds
+                  - "60"
+                  - --move-threshold-pct
+                  - "1.0"
+                  - --lookback-seconds
+                  - "300"
+                  - --allow-partial-coverage
+                  - "false"
+                  - --validation-mode
+                  - light
+                  - --sample-size
+                  - "20"
+
   prod:
     mode: production
     workspace:
