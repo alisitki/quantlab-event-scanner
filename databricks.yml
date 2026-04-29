@@ -385,6 +385,29 @@ targets:
                   - --small-output-partitions
                   - "1"
 
+        phase3b_btc_multi_event_content_review_classic:
+          name: phase3b_btc_multi_event_content_review_classic
+          tasks:
+            - task_key: review_btc_multi_event_content
+              existing_cluster_id: ${var.cluster_id}
+              spark_python_task:
+                python_file: jobs/16_review_btc_multi_event_content.py
+                parameters:
+                  - --config
+                  - configs/dev.yaml
+                  - --source-run-id
+                  - phase3a_SOURCE_RUN_ID
+                  - --top-k
+                  - "20"
+                  - --normal-count-per-event
+                  - "10"
+                  - --sample-size
+                  - "20"
+                  - --validation-mode
+                  - light
+                  - --small-output-partitions
+                  - "1"
+
         phase3a_btc_event_coverage_probe_classic:
           name: phase3a_btc_event_coverage_probe_classic
           tasks:

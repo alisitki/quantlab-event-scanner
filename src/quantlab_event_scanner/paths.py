@@ -146,6 +146,19 @@ def btc_multi_event_trial_run_path(config: ScannerConfig, run_id: str) -> str:
     return f"{config.output_root}/btc_multi_event_trials/_trial/run_id={run_id}"
 
 
+def btc_multi_event_review_trial_run_path(
+    config: ScannerConfig,
+    source_run_id: str,
+    review_run_id: str,
+) -> str:
+    """Return the Phase 3B BTC multi-event review umbrella path for a run."""
+
+    return (
+        f"{config.output_root}/btc_multi_event_reviews/_trial/"
+        f"source_run_id={source_run_id}/run_id={review_run_id}"
+    )
+
+
 def btc_event_coverage_probe_run_path(config: ScannerConfig, run_id: str) -> str:
     """Return the Phase 3A-1 BTC coverage probe umbrella path for a run."""
 

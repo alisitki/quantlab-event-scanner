@@ -1,16 +1,54 @@
 # quantlab-event-scanner
 
-Phase 0 repository bootstrap for the QuantLab event scanner.
+QuantLab Event Scanner is a Databricks/S3 research pipeline for crypto market
+event discovery and descriptive event-vs-normal analysis. The accepted current
+milestone is **Phase 3A - BTC 10-event multi-event trial/finalize**.
 
-This repository contains the project skeleton, configuration, tests, Databricks
-Asset Bundle jobs, and early Spark profiling/probe code. It does not run Spark
-event detection, train ML models, perform trading or execution, create
-notebooks, or store data locally.
+Accepted Phase 3A run:
 
-Input data is expected to live on S3 in future phases. Compacted metadata will be
-read from `s3://quantlab-compact-stk-euc1/compacted/_manifest.json` in future
-Databricks/Spark workflows. Output data must also be written to S3. The local PC
-must not store data outputs.
+- Run ID: `phase3a_20260429T085638Z`.
+- Output root:
+  `s3://quantlab-research/btc_multi_event_trials/_trial/run_id=phase3a_20260429T085638Z`.
+- Selected events: `10`.
+- Comparison rows: `exchange_profile_comparison=6600`,
+  `cross_exchange_mid_diff_comparison=1500`,
+  `bucket_change_profile_comparison=960`.
+- Top-diff rows: `exchange_profile_top_diffs=1800`,
+  `cross_exchange_mid_diff_top_diffs=1200`,
+  `bucket_change_profile_top_diffs=1560`.
+- Summary rows: `event_counts_by_direction=2`, `metric_group_summary=80`,
+  `normal_selection_quality=10`, `event_processing_status=10`.
+
+This repository is not a production trading system, not an ML system, and not a
+live execution system. It does not place orders, integrate Binance Futures order
+APIs, run user-data-stream reconciliation, or train/infer ML models. Accepted
+outputs are research/trial artifacts, not production datasets or validated
+trading signals.
+
+Immediate next step: **Phase 3B - BTC 10-event multi-event content review**.
+Phase 3B reads the accepted Phase 3A outputs and produces descriptive review
+artifacts. It must not mutate the accepted Phase 3A root and must not claim
+statistical significance or production readiness.
+
+Phase 4A decision-time label dataset is the correct future transition toward
+decision-time research, but it comes after Phase 3B/3C decisions and is not part
+of the current implementation.
+
+Input data lives on S3 under `s3://quantlab-compact-stk-euc1`; compacted
+metadata is read from
+`s3://quantlab-compact-stk-euc1/compacted/_manifest.json`. Output data is
+written to S3 under `s3://quantlab-research`. The local PC must not store data
+outputs.
+
+Current project memory and direction:
+
+- `docs/project_state/quantlab_project_state_2026-04-29.md`
+- `docs/decision_records/2026-04-29_trading_research_direction.md`
+- `docs/phase3b_btc_multi_event_content_review_plan.md`
+- `docs/data_universe_2026-04-29.md`
+- `docs/roadmap.md`
+- `docs/runbooks/phase3a_accepted_runbook.md`
+- `docs/runbooks/phase3b_review_runbook.md`
 
 The Databricks CLI will be required later for bundle validation, deployment, and
 job execution:
@@ -57,11 +95,17 @@ databricks bundle validate -t dev_serverless --profile quantlab-dev
 
 Bundle deploy and run commands are not part of Phase 0.5.
 
-Future phases:
+Current roadmap:
 
-1. Phase 1: event map scan
-2. Phase 2: pre-event window extraction
-3. Phase 3: normal-time comparison
+1. Phase 3B: BTC 10-event multi-event content review.
+2. Phase 3C: metric policy and event inventory scope decision.
+3. Phase 3D: multi-symbol event inventory / coverage preview.
+4. Phase 4A: decision-time label dataset.
+5. Phase 4B: decision-time feature dataset.
+6. Phase 4C: rule baseline + ML benchmark.
+7. Phase 5A: execution simulator / executable backtest.
+8. Phase 5B: shadow live signal generation.
+9. Phase 6: controlled small-capital production.
 
 Phase 1 design notes are tracked in
 [`docs/phase1_event_map_scan.md`](docs/phase1_event_map_scan.md).

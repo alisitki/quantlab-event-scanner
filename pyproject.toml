@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quantlab-event-scanner"
 version = "0.1.0"
-description = "Phase 0 bootstrap for QuantLab event scanner."
+description = "Databricks/S3 research pipeline for QuantLab event-scanner trials through accepted Phase 3A."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
