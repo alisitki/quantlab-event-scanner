@@ -26,17 +26,20 @@ bilgileri "repo tarafindan kayda gecirilmis sonuc" olarak ele alindi.
 
 ## Yonetici Karari
 
-Proje artik yalnizca bir iskelet degil. Repo dokumanlarina gore BTCUSDT icin
-manifest okuyan, trade/BBO verisini sekillendiren, hareket adaylarini bulan,
-trial event map yazan, pre-event market snapshot ureten, event-vs-normal profil
-karsilastirmasi yapan, 10 normal ornekli dagilim karsilastirmasi ureten ve
-Phase 3A'da 10 eventlik multi-event trial/finalize akisini tamamlamis bir
-arastirma pipeline'i durumunda.
+Proje artik yalnizca bir iskelet degil. Repo dokumanlarina gore manifestten
+exchange + stream + symbol partition'larini okuyabilen, trade/BBO verisini
+sekillendiren, hareket adaylarini bulan, trial event map yazan, pre-event market
+snapshot ureten, event-vs-normal profil karsilastirmasi yapan, 10 normal
+ornekli dagilim karsilastirmasi ureten ve Phase 3A'da 10 eventlik
+multi-event trial/finalize akisini tamamlamis bir arastirma pipeline'i
+durumunda.
 
 Fakat proje henuz production urun degil. Kabul edilmis ciktilar `_trial` ve
-`_probe` koklerinde, BTC odakli ve Databricks/S3 operasyonuna bagimli. Dokumanlar
-acik sekilde ML egitimi, trading/execution, istatistiksel sinyal ispati,
-lead-lag sonucu ve production dataset uretimini kapsam disi birakiyor.
+`_probe` koklerinde ve Databricks/S3 operasyonuna bagimli. Repo-local accepted
+run kanitlari BTC symbol family / BTCUSDT uzerinden kayda gecmistir; bu, veri
+modelinin tek sembole sabit oldugu anlamina gelmez. Dokumanlar acik sekilde ML
+egitimi, trading/execution, istatistiksel sinyal ispati, lead-lag sonucu ve
+production dataset uretimini kapsam disi birakiyor.
 
 ## Durum Matrisi
 
@@ -61,7 +64,7 @@ lead-lag sonucu ve production dataset uretimini kapsam disi birakiyor.
 
 ## Bugun Yapabildikleri
 
-### 1. Manifest ve Veri Kapsami
+### 1. Manifest, Sembol ve Veri Kapsami
 
 Proje compacted manifest v2 semantigini tuketebiliyor. Tuketici kurali net:
 `available=true` olan entry okunur, `available=false` okunmaz ve path
@@ -75,9 +78,17 @@ uretilmez; parquet pathleri `artifacts.*` alanlarindan gelir.
 - Ana borsalar: `binance`, `bybit`, `okx`
 - Stream listesi: `bbo`, `trade`, `mark_price`, `funding`, `open_interest`
 
-Kanitli accepted akislarda asil islenen scope BTC trade ve BBO verisidir.
-`mark_price`, `funding` ve `open_interest` config seviyesinde gorunur, fakat
-accepted pipeline kabiliyeti olarak one cikmiyor.
+Manifest parser ve downstream tablolar `exchange`, `stream`, `symbol`, `date`
+ayrimini korur; event grouping, snapshot, profile ve comparison akislari da
+exchange + symbol anahtarlarini tasir. Yani proje veri modeli olarak tek sembole
+sabit degildir.
+
+Bu auditin kanit tabani repo-local oldugu icin 10 sembolluk evrenin isimleri
+rapora yazilmadi: `configs/*.yaml` icinde sembol allowlist yok, README'deki
+accepted run kayitlari da BTC symbol family / BTCUSDT uzerindedir. Kanitli
+accepted akislarda asil islenen scope BTC trade ve BBO verisidir. `mark_price`,
+`funding` ve `open_interest` config seviyesinde gorunur, fakat accepted pipeline
+kabiliyeti olarak one cikmiyor.
 
 ### 2. BTC Trade Profiling ve Event Candidate Scan
 
@@ -309,7 +320,8 @@ Repo dokumanlarina gore proje su an sunlari yapmiyor veya ispatlamiyor:
 - Lead-lag sonucu veya nedensellik iddiasi uretmez.
 - Production `events_map` veya production dataset urettigini iddia etmez.
 - Yerel PC'de veri output'u saklamaz; output S3'e yazilir.
-- BTC disi semboller icin accepted capability gostermez.
+- Repo-local dokumanlar 10 sembolluk evreni isim isim kayda gecirmedigi icin
+  bu audit o sembolleri accepted kapsam olarak tek tek dogrulamaz.
 - `mark_price`, `funding`, `open_interest` streamleri icin accepted end-to-end
   capability gostermez.
 - Surekli calisan monitor, scheduler veya user-facing UI saglamaz.
@@ -324,8 +336,11 @@ Repo dokumanlarina gore proje su an sunlari yapmiyor veya ispatlamiyor:
 3. Compute hassasiyeti: Phase 2J performans dokumanlari kucuk compute ile ciddi
    runtime sorunu yasandigini, P0/P1 ile iyilesme geldigini gosteriyor. Phase 3A
    accepted retry icin de buyuk/hybrid compute notu var.
-4. Scope siniri: Accepted akisin cekirdegi BTCUSDT ve `binance/bybit/okx`.
-   Baska symbol family veya stream icin ayni kalite ve coverage kaniti yok.
+4. Scope kaniti siniri: Veri modeli sembol bazli olsa da repo-local accepted run
+   kayitlari BTC symbol family / BTCUSDT ve `binance/bybit/okx` uzerinden
+   anlatiliyor. 10 sembolluk evren repo-local config/docs icinde isim isim
+   listelenmedigi icin bu raporda dogrulanmis accepted kapsam olarak
+   yazilmadi.
 5. Metrik yorumu: Context/activity metrikleri outlier siralamalarini domine
    edebiliyor. `*.relative_change` ve denominator-risk flagli metrikler ana
    sinyal shortlist'i olarak kullanilmamali.
@@ -337,7 +352,8 @@ Repo dokumanlarina gore proje su an sunlari yapmiyor veya ispatlamiyor:
 
 ## Bugun Kullanilabilir Olanlar
 
-- BTC manifest coverage ve trade/BBO partition secimi.
+- Sembol bazli manifest coverage ve trade/BBO partition secimi; repo-local
+  accepted kanitlar BTC symbol family uzerinden.
 - BTC trade kalite profili ve 1 saniyelik price aggregation.
 - `%1 / 60s` move candidate scan ve grouped event trial map.
 - Tek event icin pre-event trade/BBO window extraction.
@@ -364,8 +380,10 @@ Repo dokumanlarina gore proje su an sunlari yapmiyor veya ispatlamiyor:
    consumer contract ve run promotion kurallari.
 2. Phase 3A accepted runbook'u bundle defaultlariyla uyumlu hale getir veya
    dokumanda smoke-run ve accepted-scale-run ayrimini resmi olarak ayir.
-3. BTC disi scope istenecekse once coverage probe ve event-quality preview
-   seviyesinde genislet.
+3. 10 sembolluk evren resmi audit kapsamina alinacaksa sembol allowlist'i veya
+   accepted multi-symbol run kaydini repo dokumanina ekle; sonra coverage probe
+   ve event-quality preview seviyesinde sembol bazli kabul kriterlerini rapora
+   dahil et.
 4. Ana metric policy'yi kilitle: context metrikleri kontrol/matching katmaninda,
    stable return/dislocation/book-spread metrikleri descriptive shortlist'te,
    unstable/denominator-risk metrikleri appendix'te kalsin.
@@ -375,13 +393,15 @@ Repo dokumanlarina gore proje su an sunlari yapmiyor veya ispatlamiyor:
 
 ## Nihai Degerlendirme
 
-QuantLab Event Scanner bugun BTCUSDT uzerinde event adayindan multi-event
-comparison summary'ye kadar uzanan, repo dokumanlariyla kabul kaydi tutulmus bir
+QuantLab Event Scanner bugun sembol bazli manifest partition'lari uzerinde
+calisacak sekilde tasarlanmis; repo dokumanlarinda BTC/BTCUSDT accepted
+kanitlariyla event adayindan multi-event comparison summary'ye kadar uzanan bir
 arastirma pipeline'idir. Projenin en guclu noktasi, her fazda S3 artifact ve row
 contract ile ilerlemesi ve Phase 3A'da 10 eventlik trial/finalize akisini
 tamamlamis olmasidir.
 
 Ana sinir ise ayni: bu henuz production event scanner veya sinyal sistemi
-degildir. Mevcut haliyle dogru tanim, "BTC odakli, Databricks/S3 uzerinde
-calisan, trial artifact ureten ve descriptive event-vs-normal/multi-normal
-analiz yapan research pipeline"dir.
+degildir. Mevcut haliyle repo-local kanita gore dogru tanim, "sembol bazli veri
+modeli olan, accepted kanitlari BTC/BTCUSDT uzerinden kayda gecmis,
+Databricks/S3 uzerinde calisan, trial artifact ureten ve descriptive
+event-vs-normal/multi-normal analiz yapan research pipeline"dir.
