@@ -46,6 +46,7 @@ Current project memory and direction:
 - `docs/decision_records/2026-04-29_trading_research_direction.md`
 - `docs/phase3b_btc_multi_event_content_review_plan.md`
 - `docs/data_universe_2026-04-29.md`
+- `docs/compute_policy_2026-04-29.md`
 - `docs/roadmap.md`
 - `docs/runbooks/phase3a_accepted_runbook.md`
 - `docs/runbooks/phase3b_review_runbook.md`
@@ -864,9 +865,10 @@ databricks bundle run phase3a_btc_multi_event_finalize_classic \
   --python-params='--config,configs/dev.yaml,--source-run-id,<phase3a_run_id>,--normal-count-per-event,10,--top-n,20,--sample-size,0,--validation-mode,light,--small-output-partitions,1'
 ```
 
-Accepted retry compute should use a large driver, not `m5d.large`: prefer
-`r6i.8xlarge` driver with `32 x r6i.2xlarge` workers, Photon enabled, autoscale
-off. `r6i.4xlarge` driver is acceptable if `r6i.8xlarge` is unavailable.
+Accepted retry compute should use enough classic cluster capacity to keep
+research runs short. The current project maximum known available profile is
+`r6i.4xlarge` driver with `28 x r6i.2xlarge` workers, Photon enabled. This
+quota profile is recorded in `docs/compute_policy_2026-04-29.md`.
 
 Verified accepted retry on 2026-04-29:
 

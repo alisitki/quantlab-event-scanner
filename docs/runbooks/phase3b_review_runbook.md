@@ -42,6 +42,24 @@ Expected subtables:
 
 Do not hardcode the accepted source run id in bundle defaults.
 
+## Compute Profile
+
+Project compute policy is recorded in `docs/compute_policy_2026-04-29.md`.
+Phase 3B should not need the max quota profile because it reads persisted Phase
+3A parquet outputs and writes small review tables.
+
+Recommended Phase 3B starting profile:
+
+- Driver: `r6i.xlarge` or `r6i.2xlarge`
+- Workers: `2-4 x r6i.xlarge` or `2-4 x r6i.2xlarge`
+- Photon: enabled
+- Autoscale: not required
+
+If the priority is shortest wall-clock time over cost, a larger cluster inside
+the current quota is acceptable. Record the actual driver, worker type, worker
+count, Photon setting, spot/on-demand mix, and runtime in the accepted review
+result.
+
 ## Manual Accepted-Source Command Shape
 
 Run manually only after bundle validation/deploy and cluster selection:

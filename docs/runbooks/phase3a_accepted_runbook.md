@@ -33,6 +33,21 @@ Accepted row counts:
 The accepted Phase 3A run used explicit runtime overrides. Do not interpret
 bundle defaults as accepted-scale production defaults.
 
+## Compute Profile
+
+The current known project maximum available profile is recorded in
+`docs/compute_policy_2026-04-29.md`:
+
+- Driver: `r6i.4xlarge`
+- Workers: `28 x r6i.2xlarge`
+- Photon: enabled
+
+Phase 3A accepted-scale generation is a heavy Spark research run. When rerunning
+accepted-scale Phase 3A, prefer a large profile inside this quota to keep
+runtime short. The accepted retry used the quota-safe large profile:
+`r6i.4xlarge` on-demand driver with `28 x r6i.2xlarge` spot workers and Photon
+enabled.
+
 ## Accepted Trial Command Shape
 
 Job A:

@@ -65,6 +65,18 @@ This repo does not currently implement:
 - Production artifact promotion.
 - Statistical significance claims.
 
+## Current Compute Boundary
+
+The current known maximum available classic cluster profile is:
+
+- Driver: `r6i.4xlarge`
+- Workers: `28 x r6i.2xlarge`
+- Photon: enabled when available
+
+The project preference is short research runtime over tiny-cluster cost savings
+when the needed size is uncertain. Detailed compute guidance is recorded in
+`docs/compute_policy_2026-04-29.md`.
+
 ## Metric Policy
 
 - `context` metrics: normal matching, regime filter, diagnostics.
